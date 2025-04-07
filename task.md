@@ -79,7 +79,7 @@ gantt
 *   [X] **Task 1.1: Initialize Project Structure & Packaging**
     *   Action: Create directory structure (`src/mcp_doc_retriever`, `scripts`, `repo_docs`, `src/mcp_doc_retriever/docs`), `pyproject.toml`, `.gitignore`. Initialize `uv`. Create placeholder `src/mcp_doc_retriever/docs/lessons_learned.json`.
     *   Deliverable: Project directory structure, `pyproject.toml`, `lessons_learned.json`.
-*   [ ] **Task 1.2: Add Basic Dependencies**
+*   [X] **Task 1.2: Add Basic Dependencies**
     *   Action: Add FastAPI, Uvicorn, Pydantic, Requests, BeautifulSoup4, lxml, Playwright using `uv add`. (Playwright browser install handled in Dockerfile).
     *   Deliverable: Updated `pyproject.toml`, `uv.lock`. Confirmation of dependency installation locally (if tested).
 *   [ ] **Task 1.3: Define Pydantic Models**

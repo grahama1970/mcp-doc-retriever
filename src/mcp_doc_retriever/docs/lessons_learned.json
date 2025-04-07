@@ -5,5 +5,12 @@
     "problem": "Attempting `git add .`, `git commit`, or `git tag` failed with 'fatal: not a git repository'.",
     "solution": "Ensure `git init` is executed successfully in the project root directory *before* attempting any other Git commands like add, commit, or tag during initial setup phases.",
     "keywords": ["git", "init", "setup", "commit", "tag", "add", "repository", "planner"]
+  },
+  {
+    "role": "Planner",
+    "task_context": "Task 1.2/1.4/1.5 - Running commands installed via uv",
+    "problem": "Commands installed via `uv sync` (e.g., `uvicorn`) were not found in the PATH when executed directly in the shell, causing 'command not found' errors.",
+    "solution": "Use `uv run <command>` to execute commands that rely on packages installed within the `uv` virtual environment. This ensures the command runs within the correct context and can locate the necessary executables.",
+    "keywords": ["uv", "run", "sync", "dependencies", "execution", "environment", "path", "command not found", "planner", "uvicorn"]
   }
 ]
