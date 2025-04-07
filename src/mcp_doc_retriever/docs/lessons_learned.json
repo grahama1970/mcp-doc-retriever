@@ -1,1 +1,9 @@
-[]
+[
+  {
+    "role": "Planner",
+    "task_context": "Initial project setup (Task 1.1), attempting Git actions (add, commit, tag)",
+    "problem": "Attempting `git add .`, `git commit`, or `git tag` failed with 'fatal: not a git repository'.",
+    "solution": "Ensure `git init` is executed successfully in the project root directory *before* attempting any other Git commands like add, commit, or tag during initial setup phases.",
+    "keywords": ["git", "init", "setup", "commit", "tag", "add", "repository", "planner"]
+  }
+]

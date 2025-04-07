@@ -1,0 +1,14 @@
+Metadata-Version: 2.4
+Name: mcp_doc_retriever
+Version: 0.1.0
+Requires-Python: >=3.11
+Requires-Dist: beautifulsoup4>=4.13.3
+Requires-Dist: fastapi>=0.115.12
+Requires-Dist: lxml>=5.3.2
+Requires-Dist: playwright>=1.51.0
+Requires-Dist: pydantic>=2.11.2
+Requires-Dist: requests>=2.32.3
+Requires-Dist: uvicorn[standard]>=0.34.0
+Provides-Extra: dev
+Requires-Dist: pytest; extra == "dev"
+Requires-Dist: ruff; extra == "dev"

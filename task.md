@@ -76,7 +76,7 @@ gantt
 
 **Phase 1: Project Setup & Core Dependencies**
 
-*   [ ] **Task 1.1: Initialize Project Structure & Packaging**
+*   [X] **Task 1.1: Initialize Project Structure & Packaging**
     *   Action: Create directory structure (`src/mcp_doc_retriever`, `scripts`, `repo_docs`, `src/mcp_doc_retriever/docs`), `pyproject.toml`, `.gitignore`. Initialize `uv`. Create placeholder `src/mcp_doc_retriever/docs/lessons_learned.json`.
     *   Deliverable: Project directory structure, `pyproject.toml`, `lessons_learned.json`.
 *   [ ] **Task 1.2: Add Basic Dependencies**

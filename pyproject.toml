@@ -1,3 +1,23 @@
 [project]
 name = "mcp_doc_retriever"
 version = "0.1.0"
+requires-python = ">=3.11" 
+dependencies = [
+    "beautifulsoup4>=4.13.3",
+    "fastapi>=0.115.12",
+    "lxml>=5.3.2",
+    "playwright>=1.51.0",
+    "pydantic>=2.11.2",
+    "requests>=2.32.3",
+    "uvicorn[standard]>=0.34.0",
+]
+[project.optional-dependencies]
+dev = ["pytest", "ruff"]
+
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+
+[tool.setuptools.packages.find]
+where = ["src"]
