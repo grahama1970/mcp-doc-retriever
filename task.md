@@ -82,7 +82,7 @@ gantt
 *   [X] **Task 1.2: Add Basic Dependencies**
     *   Action: Add FastAPI, Uvicorn, Pydantic, Requests, BeautifulSoup4, lxml, Playwright using `uv add`. (Playwright browser install handled in Dockerfile).
     *   Deliverable: Updated `pyproject.toml`, `uv.lock`. Confirmation of dependency installation locally (if tested).
-*   [ ] **Task 1.3: Define Pydantic Models**
+*   [X] **Task 1.3: Define Pydantic Models**
     *   Action: Create `src/mcp_doc_retriever/models.py`. Define API models (`DownloadRequest`, `DownloadStatus`, `SearchRequest`, `SearchResultItem`, `SearchResponse`). Define internal `IndexRecord` model (fields: `original_url`, `canonical_url`, `local_path`, `content_md5`, `fetch_status`, `http_status`, `error_message`). Ensure `DownloadStatus` includes `download_id`.
     *   Deliverable: `src/mcp_doc_retriever/models.py` with defined models.
 *   [ ] **Task 1.4: Create Basic FastAPI App & URL Utils**
