@@ -103,7 +103,7 @@ gantt
 
 **Phase 2: Downloader Implementation**
 
-*   [ ] **Task 2.1: Implement Core Downloading Logic (Requests) & Storage**
+*   [X] **Task 2.1: Implement Core Downloading Logic (Requests) & Storage**
     *   Action: Create `src/mcp_doc_retriever/downloader.py`. Implement async function `fetch_single_url_requests`. Takes canonical URL, target local path, force flag. Uses `requests`. Handles basic connection/HTTP errors. Calculates MD5 hash of content. Saves content to the specified `local_path` (mirror structure) if `--no-clobber` check (path existence) passes or `force=True`. Returns status, content MD5, detected links.
     *   Deliverable: `downloader.py` with `fetch_single_url_requests`, basic error handling, path-based clobber logic, mirror storage, MD5 calculation.
 *   [ ] **Task 2.2: Implement Recursive Download Orchestration & Indexing**

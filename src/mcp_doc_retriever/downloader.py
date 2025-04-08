@@ -64,6 +64,13 @@ async def fetch_single_url_requests(url, target_local_path, force=False, max_siz
     }
 
     try:
+        # Create target directory if needed BEFORE atomic existence check
+        try:
+            os.makedirs(os.path.dirname(target_local_path), exist_ok=True)
+        except Exception as e:
+            result['status'] = 'failed'
+            result['error_message'] = f"Directory creation failed: {str(e)}"
+            return result
         import urllib.parse
         # Decode URL-encoded characters to prevent bypass (handle multiple encodings)
         decoded_path = target_local_path
@@ -79,18 +86,22 @@ async def fetch_single_url_requests(url, target_local_path, force=False, max_siz
             result['error_message'] = f"Target path outside allowed directory: target='{norm_target}' base='{norm_base}'"
             return result
 
-        # Check if file exists and handle force/no-clobber logic
-        if os.path.exists(norm_target) and not force:
-            result['status'] = 'skipped'
-            return result
-
-        # Create target directory if needed
+        # Atomic existence check to prevent TOCTOU race
         try:
-            os.makedirs(os.path.dirname(norm_target), exist_ok=True)
+            flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
+            fd = os.open(norm_target, flags)
+            os.close(fd)
+            # File did not exist before, safe to proceed
+        except FileExistsError:
+            if not force:
+                result['status'] = 'skipped'
+                return result
+            # else: force=True, proceed to overwrite later
         except Exception as e:
             result['status'] = 'failed'
-            result['error_message'] = f"Directory creation failed: {str(e)}"
+            result['error_message'] = f"Atomic existence check failed: {str(e)}"
             return result
+
 
         async with httpx.AsyncClient(follow_redirects=True, timeout=30) as client:
             try:
@@ -146,6 +157,13 @@ async def fetch_single_url_requests(url, target_local_path, force=False, max_siz
                     
                     # Atomic rename
                     try:
+                        # Before rename, check again for TOCTOU protection
+                        if not force and os.path.exists(norm_target):
+                            # Someone created file during download, skip overwrite
+                            os.remove(temp_path)
+                            result['status'] = 'skipped'
+                            return result
+
                         os.replace(temp_path, norm_target)
                         result['content_md5'] = md5.hexdigest()
                     except Exception as e:
@@ -204,3 +222,163 @@ async def fetch_single_url_requests(url, target_local_path, force=False, max_siz
         result['status'] = 'failed'
         result['error_message'] = str(e)
         return result
+
+
+async def _is_allowed_by_robots(url: str, client: httpx.AsyncClient, robots_cache: dict) -> bool:
+    """
+    Basic robots.txt check with caching.
+    """
+    from urllib.parse import urlparse
+
+    parsed = urlparse(url)
+    base_url = f"{parsed.scheme}://{parsed.netloc}"
+    robots_url = f"{base_url}/robots.txt"
+
+    if base_url in robots_cache:
+        disallow_list = robots_cache[base_url]
+    else:
+        disallow_list = []
+        try:
+            resp = await client.get(robots_url, timeout=10)
+            if resp.status_code == 200:
+                lines = resp.text.splitlines()
+                user_agent = None
+                for line in lines:
+                    line = line.strip()
+                    if not line or line.startswith('#'):
+                        continue
+                    if line.lower().startswith('user-agent:'):
+                        user_agent = line.split(':',1)[1].strip()
+                    elif line.lower().startswith('disallow:') and (user_agent == '*' or user_agent is None):
+                        path = line.split(':',1)[1].strip()
+                        if path:
+                            disallow_list.append(path)
+            # Cache regardless of success to avoid repeated fetches
+            robots_cache[base_url] = disallow_list
+        except Exception:
+            robots_cache[base_url] = disallow_list  # treat as allowed on error
+
+    # Check if URL path is disallowed
+    for disallowed in disallow_list:
+        if parsed.path.startswith(disallowed):
+            return False
+    return True
+
+
+async def start_recursive_download(
+    start_url: str,
+    depth: int,
+    force: bool,
+    download_id: str,
+    base_dir: str = "/app/downloads"
+) -> None:
+    import json
+    import os
+    import aiofiles
+    import asyncio
+    from urllib.parse import urlparse
+
+    from src.mcp_doc_retriever.utils import canonicalize_url, url_to_local_path
+    from src.mcp_doc_retriever.models import IndexRecord
+
+    # Prepare index file path
+    index_dir = os.path.join(base_dir, "index")
+    os.makedirs(index_dir, exist_ok=True)
+    index_path = os.path.join(index_dir, f"{download_id}.jsonl")
+
+    # Initialize queue and visited set
+    queue = asyncio.Queue()
+    await queue.put((start_url, 0))
+    visited = set()
+
+    # Canonicalize start domain for domain restriction
+    start_canonical = canonicalize_url(start_url)
+    start_domain = urlparse(start_canonical).netloc
+
+    robots_cache = {}
+
+    async with httpx.AsyncClient(follow_redirects=True, timeout=30) as client:
+        while not queue.empty():
+            current_url, current_depth = await queue.get()
+
+            canonical_url = canonicalize_url(current_url)
+            if canonical_url in visited:
+                continue
+            visited.add(canonical_url)
+
+            # Domain restriction
+            parsed_url = urlparse(canonical_url)
+            if not parsed_url.netloc.endswith(start_domain):
+                continue
+
+            # Robots.txt check
+            allowed = await _is_allowed_by_robots(canonical_url, client, robots_cache)
+            if not allowed:
+                record = IndexRecord(
+                    original_url=current_url,
+                    canonical_url=canonical_url,
+                    local_path="",
+                    content_md5=None,
+                    fetch_status="failed_robotstxt",
+                    http_status=None,
+                    error_message="Blocked by robots.txt"
+                )
+                async with aiofiles.open(index_path, 'a') as f:
+                    await f.write(record.json() + "\n")
+                continue
+
+            # Map URL to local path
+            local_path = url_to_local_path(base_dir, canonical_url)
+
+            # Download
+            try:
+                result = await fetch_single_url_requests(
+                    current_url,
+                    local_path,
+                    force=force,
+                    allowed_base_dir=base_dir
+                )
+            except Exception as e:
+                record = IndexRecord(
+                    original_url=current_url,
+                    canonical_url=canonical_url,
+                    local_path=local_path,
+                    content_md5=None,
+                    fetch_status="failed_request",
+                    http_status=None,
+                    error_message=str(e)
+                )
+                async with aiofiles.open(index_path, 'a') as f:
+                    await f.write(record.json() + "\n")
+                continue
+
+            status = result.get("status")
+            content_md5 = result.get("content_md5")
+            error_message = result.get("error_message")
+            detected_links = result.get("detected_links", [])
+
+            fetch_status = "success" if status == "success" else "failed_request"
+
+            record = IndexRecord(
+                original_url=current_url,
+                canonical_url=canonical_url,
+                local_path=local_path,
+                content_md5=content_md5,
+                fetch_status=fetch_status,
+                http_status=None,
+                error_message=error_message
+            )
+            async with aiofiles.open(index_path, 'a') as f:
+                await f.write(record.json() + "\n")
+
+            # Recurse if within depth and success
+            if fetch_status == "success" and current_depth < depth:
+                for link in detected_links:
+                    try:
+                        abs_link = httpx.URL(link, base=current_url).human_repr()
+                        canon_link = canonicalize_url(abs_link)
+                        canon_domain = urlparse(canon_link).netloc
+                        if canon_link not in visited and canon_domain.endswith(start_domain):
+                            await queue.put((abs_link, current_depth + 1))
+                    except Exception:
+                        continue

@@ -103,6 +103,64 @@ async def test_md5_hash(tmpdir):
         print_result(test_name, True)
     except Exception as e:
         print_result(test_name, False, str(e))
+async def test_recursive_download_basic(tmpdir):
+    test_name = "Recursive download basic test (depth=1)"
+    from src.mcp_doc_retriever.downloader import start_recursive_download
+    import json
+    import os
+
+    try:
+        download_id = "test"
+        base_dir = tmpdir
+        index_dir = os.path.join(base_dir, "index")
+        index_path = os.path.join(index_dir, f"{download_id}.jsonl")
+
+        # Run the recursive downloader
+        await start_recursive_download(
+            start_url="https://example.com",
+            depth=1,
+            force=True,
+            download_id=download_id,
+            base_dir=base_dir
+        )
+
+        # Verify index file exists
+        assert os.path.exists(index_path), "Index file was not created"
+
+        # Read index records
+        with open(index_path, "r") as f:
+            lines = f.readlines()
+        assert len(lines) >= 1, "Index file is empty"
+
+        # Parse records and verify initial URL success
+        found_success = False
+        for line in lines:
+            rec = json.loads(line)
+            if rec.get("original_url") == "https://example.com":
+                if rec.get("fetch_status") == "success":
+                    found_success = True
+        if not found_success:
+            # Print index file contents for debugging
+            print(f"Index file contents for {test_name}:")
+            for line in lines:
+                print(line.strip())
+            raise AssertionError("Initial URL not recorded as success")
+
+        # Verify downloaded file exists
+        # Find the local_path from the successful record
+        local_paths = [json.loads(line).get("local_path") for line in lines if json.loads(line).get("fetch_status") == "success"]
+        for path in local_paths:
+            if path:
+                full_path = os.path.join(base_dir, path) if not os.path.isabs(path) else path
+                assert os.path.exists(full_path), f"Downloaded file missing: {full_path}"
+
+        # Verify no depth >1 URLs fetched (since depth=1)
+        # All records should have depth 0 or 1, but since example.com has no links, only 1 record expected
+        assert len(lines) == 1, f"Unexpected number of records (expected 1), got {len(lines)}"
+
+        print_result(test_name, True)
+    except Exception as e:
+        print_result(test_name, False, str(e))
 
 async def main():
     with tempfile.TemporaryDirectory() as tmpdir:
@@ -110,6 +168,8 @@ async def main():
         await test_no_clobber_force_false(tmpdir)
         await test_invalid_url(tmpdir)
         await test_directory_creation(tmpdir)
+        await test_md5_hash(tmpdir)
+        await test_recursive_download_basic(tmpdir)
         await test_md5_hash(tmpdir)
 
 if __name__ == "__main__":
