@@ -181,6 +181,7 @@ def extract_text_with_selector(
     for el in elements:
         text = el.get_text(separator=' ', strip=True)
         snippets.append(text)
+    print("Snippets before filtering:", snippets)
 
     if extract_keywords:
         lowered_keywords = [kw.lower() for kw in extract_keywords if kw]
@@ -192,4 +193,106 @@ def extract_text_with_selector(
                     filtered.append(snippet)
             return filtered
 
-    return snippets
+import json
+import re
+from . import config
+from .models import IndexRecord, SearchResultItem
+
+
+def perform_search(
+    download_id: str,
+    scan_keywords: list[str],
+    selector: str,
+    extract_keywords: list[str] | None = None
+) -> list[SearchResultItem]:
+    """
+    Perform a search over downloaded HTML files using keyword scanning and content extraction.
+
+    Args:
+        download_id (str): The download session identifier.
+        scan_keywords (list[str]): Keywords to scan files for.
+        selector (str): CSS selector to extract content.
+        extract_keywords (list[str] | None): Optional keywords to filter extracted snippets.
+
+    Returns:
+        list[SearchResultItem]: List of search result items.
+    """
+    # Validate download_id to prevent path traversal
+    if not re.fullmatch(r"[a-zA-Z0-9_-]+", download_id):
+        logging.error("Invalid download_id format: %s", download_id)
+        return []
+
+    allowed_base_dirs = [os.path.realpath(config.DOWNLOAD_BASE_DIR)]
+
+    search_results: list[SearchResultItem] = []
+    index_path = os.path.join(config.DOWNLOAD_BASE_DIR, 'index', f"{download_id}.jsonl")
+
+    try:
+        with open(index_path, 'r', encoding='utf-8') as f:
+            lines = f.readlines()
+    except FileNotFoundError:
+        logging.error(f"Index file not found: %s", index_path)
+        return []
+
+    url_map: dict[str, str] = {}
+    successful_paths: list[str] = []
+
+    for line in lines:
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            record_data = json.loads(line)
+            record = IndexRecord(**record_data)
+        except json.JSONDecodeError:
+            logging.warning("Skipping invalid JSON line in index: %s...", line[:100])
+            continue
+        except Exception as e:
+            logging.warning("Skipping invalid record in index: %s", e)
+            continue
+
+        if record.fetch_status == 'success':
+            # Validate local_path is within allowed directories
+            if is_allowed_path(record.local_path, allowed_base_dirs):
+                real_path = os.path.realpath(record.local_path)
+                url_map[real_path] = record.original_url
+                successful_paths.append(real_path)
+            else:
+                logging.warning("Skipping disallowed local_path in index: %s", record.local_path)
+
+    logging.debug("Successful paths before scan: %s", successful_paths)
+
+    candidate_paths = scan_files_for_keywords(
+        successful_paths,
+        scan_keywords,
+        allowed_base_dirs=allowed_base_dirs
+    )
+
+    logging.debug("Candidate paths after scan: %s", candidate_paths)
+
+    print("Successful paths before scan:", successful_paths)
+    print("Candidate paths after scan:", candidate_paths)
+
+    for candidate_path in candidate_paths:
+        print("Candidate path before url_map lookup:", candidate_path)
+        snippets = extract_text_with_selector(candidate_path, selector, extract_keywords)
+        if not snippets:
+            continue
+
+        original_url = url_map.get(candidate_path, "")
+        print("Snippets for candidate:", candidate_path, snippets)
+        print("Before snippet loop, snippets:", snippets)
+        print("Type of snippets:", type(snippets))
+        for snippet in snippets:
+            try:
+                print("Adding snippet:", snippet)
+                item = SearchResultItem(
+                    original_url=original_url,
+                    extracted_content=snippet,
+                    selector_matched=selector
+                )
+                search_results.append(item)
+            except Exception as e:
+                print("Error creating SearchResultItem:", e)
+
+    return search_results

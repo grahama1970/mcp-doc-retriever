@@ -1,3 +1,6 @@
+import logging
+logging.basicConfig(level=logging.DEBUG)
+
 import os
 from src.mcp_doc_retriever.searcher import scan_files_for_keywords
 
@@ -257,3 +260,145 @@ if __name__ == "__main__":
     test_scan_files_for_bypass_attempts()
     test_extract_text_with_selector()
     test_extract_text_with_selector_security()
+import json
+import os
+from src.mcp_doc_retriever.searcher import perform_search
+from src.mcp_doc_retriever import config
+
+
+def test_perform_search_basic():
+    # Setup temporary download_id and paths
+    download_id = "test_download"
+    index_dir = os.path.join(config.DOWNLOAD_BASE_DIR, "index")
+    os.makedirs(index_dir, exist_ok=True)
+    index_path = os.path.join(index_dir, f"{download_id}.jsonl")
+
+    # Create a sample HTML file
+    html_path = os.path.join(config.DOWNLOAD_BASE_DIR, "test_file.html")
+    html_content = "<html><body><div class='content'>Hello World! Extract me.</div></body></html>"
+    os.makedirs(os.path.dirname(html_path), exist_ok=True)
+    with open(html_path, "w", encoding="utf-8") as f:
+        f.write(html_content)
+
+    # Create a sample index record with fetch_status success
+    record = {
+        "original_url": "http://example.com",
+        "canonical_url": "http://example.com",
+        "local_path": html_path,
+        "content_md5": None,
+        "fetch_status": "success",
+        "http_status": 200,
+        "error_message": None
+    }
+    with open(index_path, "w", encoding="utf-8") as f:
+        f.write(json.dumps(record) + "\n")
+
+    # Call perform_search
+    results = perform_search(
+        download_id=download_id,
+        scan_keywords=["hello", "world"],
+        selector=".content",
+        extract_keywords=["extract"]
+    )
+
+    # Check results
+    assert len(results) == 1, f"Expected 1 result, got {len(results)}"
+    result = results[0]
+    assert result.original_url == "http://example.com"
+    assert "Extract me" in result.extracted_content
+    assert result.selector_matched == ".content"
+
+    # Cleanup
+    try:
+        os.remove(index_path)
+    except:
+        pass
+    try:
+        os.remove(html_path)
+    except:
+        pass
+
+def test_perform_search_invalid_download_id():
+    from src.mcp_doc_retriever.searcher import perform_search
+
+    # Invalid download_id with path traversal attempt
+    invalid_ids = ["../secret", "bad/id", "id with spaces", "id;rm -rf", "id..", "id/..", "id/../etc/passwd"]
+
+    for bad_id in invalid_ids:
+        results = perform_search(
+            download_id=bad_id,
+            scan_keywords=["test"],
+            selector="body"
+        )
+        assert results == [], f"Expected empty results for invalid download_id '{bad_id}'"
+
+def test_perform_search_skips_disallowed_paths():
+    import json
+    import os
+    from src.mcp_doc_retriever.searcher import perform_search
+    from src.mcp_doc_retriever import config
+
+    # Convert DOWNLOAD_BASE_DIR to absolute path to avoid path check issues
+    base_dir = os.path.abspath(config.DOWNLOAD_BASE_DIR)
+
+    download_id = "security_test"
+    index_dir = os.path.join(base_dir, "index")
+    os.makedirs(index_dir, exist_ok=True)
+    index_path = os.path.join(index_dir, f"{download_id}.jsonl")
+
+    # Create a valid HTML file inside allowed dir
+    valid_html_path = os.path.join(base_dir, "valid_file.html")
+    os.makedirs(os.path.dirname(valid_html_path), exist_ok=True)
+    with open(valid_html_path, "w", encoding="utf-8") as f:
+        f.write("<html><body><div class='content'>Safe Content</div></body></html>")
+
+    # Create index with one valid and one malicious entry
+    valid_record = {
+        "original_url": "http://safe.com",
+        "canonical_url": "http://safe.com",
+        "local_path": valid_html_path,
+        "content_md5": None,
+        "fetch_status": "success",
+        "http_status": 200,
+        "error_message": None
+    }
+    malicious_record = {
+        "original_url": "http://evil.com",
+        "canonical_url": "http://evil.com",
+        "local_path": "/etc/passwd",
+        "content_md5": None,
+        "fetch_status": "success",
+        "http_status": 200,
+        "error_message": None
+    }
+    with open(index_path, "w", encoding="utf-8") as f:
+        f.write(json.dumps(valid_record) + "\n")
+        f.write(json.dumps(malicious_record) + "\n")
+
+    print("Valid HTML path:", valid_html_path)
+    print("File exists:", os.path.exists(valid_html_path))
+    with open(valid_html_path, 'r', encoding='utf-8') as f:
+        print("File content:", f.read())
+
+    results = perform_search(
+        download_id=download_id,
+        scan_keywords=["safe", "content"],
+        selector=".content"
+    )
+
+    print("Results:", results)
+
+    # Only the valid file should be returned
+    assert len(results) == 1, f"Expected 1 result, got {len(results)}"
+    assert results[0].original_url == "http://safe.com"
+    assert "Safe Content" in results[0].extracted_content
+
+    # Cleanup
+    try:
+        os.remove(index_path)
+    except:
+        pass
+    try:
+        os.remove(valid_html_path)
+    except:
+        pass

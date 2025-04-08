@@ -1,0 +1,2 @@
+{"original_url": "http://safe.com", "canonical_url": "http://safe.com", "local_path": "/Users/robert/Documents/dev/workspace/experiments/mcp-doc-retriver/downloads/valid_file.html", "content_md5": null, "fetch_status": "success", "http_status": 200, "error_message": null}
+{"original_url": "http://evil.com", "canonical_url": "http://evil.com", "local_path": "/etc/passwd", "content_md5": null, "fetch_status": "success", "http_status": 200, "error_message": null}

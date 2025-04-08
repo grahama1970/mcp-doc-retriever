@@ -82,5 +82,19 @@
     "problem": "Naive HTML keyword scanning risks inefficiency, errors with encodings, scanning sensitive files, or resource exhaustion.",
     "solution": "When implementing keyword scanning over local HTML files, ensure to: Use robust HTML parsing (e.g., BeautifulSoup) with graceful encoding fallback. Enforce directory restrictions to avoid scanning sensitive files. Impose file size limits to prevent resource exhaustion. Log and skip problematic files rather than failing. Decompose logic into clear, testable components for maintainability. This approach balances speed, accuracy, and security.",
     "keywords": ["html", "parsing", "keyword scanning", "security", "efficiency", "junior-coder"]
+  },
+  {
+    "role": "Hacker",
+    "task_context": "Security hardening of downloader and file handling",
+    "problem": "User-controlled identifiers such as filenames or IDs can be crafted to perform path traversal or injection attacks if not strictly validated.",
+    "solution": "Always strictly validate user-controlled identifiers against safe patterns (e.g., allowlists or strict regex) to prevent path traversal and injection attacks.",
+    "keywords": ["security", "validation", "identifiers", "path traversal", "injection", "hacker"]
+  },
+  {
+    "role": "Hacker",
+    "task_context": "Security hardening of downloader and file handling",
+    "problem": "File paths from untrusted sources, such as index files, may be manipulated to escape allowed directories and access unauthorized files.",
+    "solution": "Enforce allowed directory constraints by resolving file paths to their real absolute paths and verifying they remain within the intended base directory using commonpath checks. This prevents unauthorized file access via directory traversal.",
+    "keywords": ["security", "directory traversal", "realpath", "commonpath", "file access", "hacker"]
   }
 ]

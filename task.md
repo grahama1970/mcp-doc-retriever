@@ -140,7 +140,7 @@ gantt
 *   [X] **Task 3.1: Implement Fast Keyword Scan**
     *   Action: Create `src/mcp_doc_retriever/searcher.py`. Implement function `scan_files_for_keywords`. Takes list of local file paths, list of scan keywords. For each path, opens file, *decodes HTML content to text* (handle encoding errors gracefully - log/skip), performs case-insensitive keyword search. Returns list of paths that contain *all* keywords.
     *   Deliverable: `searcher.py` with `scan_files_for_keywords` function using decoded text.
-*   [ ] **Task 3.2: Implement Precise Selector Extraction (Text Only)**
+*   [X] **Task 3.2: Implement Precise Selector Extraction (Text Only)**
     *   Action: Implement function `extract_text_with_selector`. Takes a single local file path, CSS selector, optional list of extract keywords. Parses HTML with BeautifulSoup. Finds elements matching selector. Extracts *text content* (`.get_text()`). If extract keywords provided, filters results keeping only those whose text contains *all* extract keywords (case-insensitive). Returns list of extracted text snippets.
     *   Deliverable: `searcher.py` with `extract_text_with_selector` function returning text only.
 *   [ ] **Task 3.3: Integrate Two-Phase Search Logic & Index Lookup**
