@@ -142,3 +142,54 @@ def scan_files_for_keywords(
             matches.append(file_path)
 
     return matches
+
+
+def extract_text_with_selector(
+    file_path: str,
+    selector: str,
+    extract_keywords: list[str] | None = None
+) -> list[str]:
+    """
+    Extract text snippets from elements matching a CSS selector in an HTML file.
+
+    Args:
+        file_path (str): Path to the HTML file.
+        selector (str): CSS selector string.
+        extract_keywords (list[str], optional): Keywords to filter snippets. Defaults to None.
+
+    Returns:
+        list[str]: List of extracted (and optionally filtered) text snippets.
+    """
+    content = read_file_with_fallback(file_path)
+    if content is None:
+        logging.warning(f"Failed to read file: {file_path}")
+        return []
+
+    try:
+        soup = BeautifulSoup(content, 'html.parser')
+    except Exception as e:
+        logging.warning(f"Error parsing HTML in {file_path}: {e}")
+        return []
+
+    try:
+        elements = soup.select(selector)
+    except Exception as e:
+        logging.warning(f"Invalid CSS selector '{selector}' for file {file_path}: {e}")
+        return []
+
+    snippets = []
+    for el in elements:
+        text = el.get_text(separator=' ', strip=True)
+        snippets.append(text)
+
+    if extract_keywords:
+        lowered_keywords = [kw.lower() for kw in extract_keywords if kw]
+        if lowered_keywords:
+            filtered = []
+            for snippet in snippets:
+                snippet_lower = snippet.lower()
+                if all(kw in snippet_lower for kw in lowered_keywords):
+                    filtered.append(snippet)
+            return filtered
+
+    return snippets

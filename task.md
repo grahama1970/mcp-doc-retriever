@@ -137,7 +137,7 @@ gantt
 
 **Phase 3: Searcher Implementation**
 
-*   [ ] **Task 3.1: Implement Fast Keyword Scan**
+*   [X] **Task 3.1: Implement Fast Keyword Scan**
     *   Action: Create `src/mcp_doc_retriever/searcher.py`. Implement function `scan_files_for_keywords`. Takes list of local file paths, list of scan keywords. For each path, opens file, *decodes HTML content to text* (handle encoding errors gracefully - log/skip), performs case-insensitive keyword search. Returns list of paths that contain *all* keywords.
     *   Deliverable: `searcher.py` with `scan_files_for_keywords` function using decoded text.
 *   [ ] **Task 3.2: Implement Precise Selector Extraction (Text Only)**
