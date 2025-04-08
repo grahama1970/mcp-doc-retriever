@@ -106,7 +106,7 @@ gantt
 *   [X] **Task 2.1: Implement Core Downloading Logic (Requests) & Storage**
     *   Action: Create `src/mcp_doc_retriever/downloader.py`. Implement async function `fetch_single_url_requests`. Takes canonical URL, target local path, force flag. Uses `requests`. Handles basic connection/HTTP errors. Calculates MD5 hash of content. Saves content to the specified `local_path` (mirror structure) if `--no-clobber` check (path existence) passes or `force=True`. Returns status, content MD5, detected links.
     *   Deliverable: `downloader.py` with `fetch_single_url_requests`, basic error handling, path-based clobber logic, mirror storage, MD5 calculation.
-*   [ ] **Task 2.2: Implement Recursive Download Orchestration & Indexing**
+*   [X] **Task 2.2: Implement Recursive Download Orchestration & Indexing**
     *   Action: Implement main async orchestrator function `start_recursive_download`. Takes start URL, depth, force flag, `download_id`. Creates/opens index file (`/app/downloads/index/{download_id}.jsonl`). Manages queue/set of visited canonical URLs. Calls fetch function (initially `fetch_single_url_requests`). Extracts links, canonicalizes them, checks domain/subdomain policy, checks depth, checks `robots.txt` (`utils.py` helper needed). Appends `IndexRecord` to index file for each attempt (success/failure). Respects concurrency limits (see Task 2.6).
     *   Deliverable: Updated `downloader.py` with recursive orchestration logic, domain/depth checking, `robots.txt` checking helper call, index file writing.
 *   [ ] **Task 2.3: Implement Playwright Fallback & Auto-Detection**

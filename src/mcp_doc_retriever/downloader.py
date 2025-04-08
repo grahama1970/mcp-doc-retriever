@@ -6,6 +6,13 @@ import time
 import httpx
 import aiofiles
 import fcntl
+import bleach
+
+# Global concurrency and resource controls for Playwright
+playwright_semaphore = asyncio.Semaphore(5)  # Limit concurrent Playwright sessions
+active_browser_count = 0
+browser_count_lock = asyncio.Lock()
+
 
 # Global lock file path with user-specific name
 GLOBAL_LOCK_PATH = f'/tmp/mcp_downloader_{os.getuid()}.lock'
@@ -30,6 +37,178 @@ async def acquire_global_lock():
             break
     return None
 
+async def fetch_single_url_playwright(url, target_local_path, force=False, max_size=None, allowed_base_dir="."):
+    """
+    Download a single URL using Playwright to a local file asynchronously, with security protections.
+
+    Returns:
+        dict: {
+            'status': 'success' | 'skipped' | 'failed',
+            'content_md5': str or None,
+            'detected_links': list of str,
+            'error_message': str or None
+        }
+    """
+    import tempfile
+    result = {
+        'status': None,
+        'content_md5': None,
+        'detected_links': [],
+        'error_message': None
+    }
+
+    try:
+        # Create target directory if needed BEFORE atomic existence check
+        try:
+            os.makedirs(os.path.dirname(target_local_path), exist_ok=True)
+        except Exception as e:
+            result['status'] = 'failed'
+            result['error_message'] = f"Directory creation failed: {str(e)}"
+            return result
+
+        import urllib.parse
+        # Decode URL-encoded characters to prevent bypass (handle multiple encodings)
+        decoded_path = target_local_path
+        while '%' in decoded_path:
+            decoded_path = urllib.parse.unquote(decoded_path)
+        decoded_path = decoded_path.replace("\\", "/")
+        norm_base = os.path.abspath(allowed_base_dir)
+        norm_target = os.path.abspath(os.path.normpath(decoded_path))
+        if not norm_target.startswith(norm_base):
+            result['status'] = 'failed'
+            result['error_message'] = f"Target path outside allowed directory: target='{norm_target}' base='{norm_base}'"
+            return result
+
+        # Atomic existence check
+        try:
+            flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
+            fd = os.open(norm_target, flags)
+            os.close(fd)
+        except FileExistsError:
+            if not force:
+                result['status'] = 'skipped'
+                return result
+            # else: force=True, proceed to overwrite later
+        except Exception as e:
+            result['status'] = 'failed'
+            result['error_message'] = f"Atomic existence check failed: {str(e)}"
+            return result
+
+        # Acquire global download lock
+        lock_file = await acquire_global_lock()
+        if not lock_file:
+            result['status'] = 'failed'
+            result['error_message'] = "Download locked by another process"
+            return result
+
+        try:
+            # Acquire concurrency semaphore to limit resource exhaustion
+            await playwright_semaphore.acquire()
+            global active_browser_count
+            try:
+                # Track active browser count for leak/resource monitoring
+                async with browser_count_lock:
+                    active_browser_count += 1
+                    if active_browser_count > 10:
+                        print(f"[WARN] High number of active Playwright browsers: {active_browser_count}")
+
+                from playwright.async_api import async_playwright, Error as PlaywrightError
+
+                async with async_playwright() as p:
+                    browser = await p.chromium.launch(headless=True)
+                    context = await browser.new_context()
+                    page = await context.new_page()
+                    try:
+                        await page.goto(url, wait_until="networkidle", timeout=30000)
+                        original_content = await page.content()
+                        # Sanitize HTML content to prevent XSS
+                        content = bleach.clean(
+                            original_content,
+                            tags=bleach.sanitizer.ALLOWED_TAGS,
+                            attributes=bleach.sanitizer.ALLOWED_ATTRIBUTES
+                        )
+                    except PlaywrightError as e:
+                        await page.close()
+                        await context.close()
+                        await browser.close()
+                        result['status'] = 'failed'
+                        result['error_message'] = f"Playwright navigation error: {str(e)}"
+                        return result
+                    except Exception as e:
+                        await page.close()
+                        await context.close()
+                        await browser.close()
+                        result['status'] = 'failed'
+                        result['error_message'] = f"Playwright error: {str(e)}"
+                        return result
+
+                    await page.close()
+                    await context.close()
+                    await browser.close()
+
+            finally:
+                # Decrement active browser count and release semaphore
+                async with browser_count_lock:
+                    active_browser_count -= 1
+                playwright_semaphore.release()
+
+            # Enforce max_size
+            content_bytes = content.encode('utf-8', errors='ignore')
+            if max_size is not None and len(content_bytes) > max_size:
+                result['status'] = 'failed'
+                result['error_message'] = f"File too large ({len(content_bytes)} bytes > max_size {max_size})"
+                return result
+
+            # Write atomically
+            target_dir = os.path.dirname(norm_target)
+            fd, temp_path = tempfile.mkstemp(dir=target_dir)
+            os.close(fd)
+
+            md5 = hashlib.md5()
+            try:
+                async with aiofiles.open(temp_path, 'wb') as f:
+                    md5.update(content_bytes)
+                    await f.write(content_bytes)
+
+                # Before rename, check again for TOCTOU protection
+                if not force and os.path.exists(norm_target):
+                    os.remove(temp_path)
+                    result['status'] = 'skipped'
+                    return result
+
+                os.replace(temp_path, norm_target)
+                result['content_md5'] = md5.hexdigest()
+
+            except Exception as e:
+                if os.path.exists(temp_path):
+                    os.remove(temp_path)
+                result['status'] = 'failed'
+                result['error_message'] = f"File write failed: {str(e)}"
+                return result
+
+            # Link detection
+            try:
+                text_content = content
+                links = re.findall(r'''(?:href|src)=["'](.*?)["']''', text_content, re.IGNORECASE)
+                result['detected_links'] = links
+            except Exception:
+                result['detected_links'] = []
+
+            result['status'] = 'success'
+            return result
+
+        finally:
+            try:
+                fcntl.flock(lock_file, fcntl.LOCK_UN)
+                lock_file.close()
+                os.remove(GLOBAL_LOCK_PATH)
+            except:
+                pass
+
+    except Exception as e:
+        result['status'] = 'failed'
+        result['error_message'] = str(e)
+        return result
 
 async def fetch_single_url_requests(url, target_local_path, force=False, max_size=None, allowed_base_dir="."):
     """
@@ -270,7 +449,8 @@ async def start_recursive_download(
     depth: int,
     force: bool,
     download_id: str,
-    base_dir: str = "/app/downloads"
+    base_dir: str = "/app/downloads",
+    use_playwright: bool = False
 ) -> None:
     import json
     import os
@@ -332,12 +512,37 @@ async def start_recursive_download(
 
             # Download
             try:
-                result = await fetch_single_url_requests(
-                    current_url,
-                    local_path,
-                    force=force,
-                    allowed_base_dir=base_dir
-                )
+                if use_playwright:
+                    result = await fetch_single_url_playwright(
+                        current_url,
+                        local_path,
+                        force=force,
+                        allowed_base_dir=base_dir
+                    )
+                else:
+                    result = await fetch_single_url_requests(
+                        current_url,
+                        local_path,
+                        force=force,
+                        allowed_base_dir=base_dir
+                    )
+                    # Check for dynamic content fallback
+                    if result.get("status") == "success":
+                        try:
+                            async with aiofiles.open(local_path, 'rb') as f:
+                                content_bytes = await f.read()
+                            if len(content_bytes) < 1024 and (b"#root" in content_bytes or b"#app" in content_bytes):
+                                # Retry with Playwright
+                                pw_result = await fetch_single_url_playwright(
+                                    current_url,
+                                    local_path,
+                                    force=True,  # overwrite with Playwright content
+                                    allowed_base_dir=base_dir
+                                )
+                                if pw_result.get("status") == "success":
+                                    result = pw_result  # override with Playwright result
+                        except Exception:
+                            pass
             except Exception as e:
                 record = IndexRecord(
                     original_url=current_url,

@@ -47,6 +47,18 @@ wheels = [
 ]
 
 [[package]]
+name = "bleach"
+version = "6.2.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "webencodings" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/76/9a/0e33f5054c54d349ea62c277191c020c2d6ef1d65ab2cb1993f91ec846d1/bleach-6.2.0.tar.gz", hash = "sha256:123e894118b8a599fd80d3ec1a6d4cc7ce4e5882b1317a7e1ba69b56e95f991f", size = 203083 }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/fc/55/96142937f66150805c25c4d0f31ee4132fd33497753400734f9dfdcbdc66/bleach-6.2.0-py3-none-any.whl", hash = "sha256:117d9c6097a7c3d22fd578fcd8d35ff1e125df6736f554da4e432fdd63f31e5e", size = 163406 },
+]
+
+[[package]]
 name = "certifi"
 version = "2025.1.31"
 source = { registry = "https://pypi.org/simple" }
@@ -339,6 +351,7 @@ source = { editable = "." }
 dependencies = [
     { name = "aiofiles" },
     { name = "beautifulsoup4" },
+    { name = "bleach" },
     { name = "fastapi" },
     { name = "filelock" },
     { name = "httpx" },
@@ -361,6 +374,7 @@ dev = [
 requires-dist = [
     { name = "aiofiles", specifier = ">=24.1.0" },
     { name = "beautifulsoup4", specifier = ">=4.13.3" },
+    { name = "bleach", specifier = ">=6.2.0" },
     { name = "fastapi", specifier = ">=0.115.12" },
     { name = "filelock", specifier = ">=3.18.0" },
     { name = "httpx", specifier = ">=0.27.0" },
@@ -768,6 +782,15 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/f2/e1/0025d365cf6248c4d1ee4c3d2e3d373bdd3f6aff78ba4298f97b4fad2740/watchfiles-1.0.4-cp313-cp313-musllinux_1_1_x86_64.whl", hash = "sha256:308ac265c56f936636e3b0e3f59e059a40003c655228c131e1ad439957592303", size = 611911 },
     { url = "https://files.pythonhosted.org/packages/55/55/035838277d8c98fc8c917ac9beeb0cd6c59d675dc2421df5f9fcf44a0070/watchfiles-1.0.4-cp313-cp313-win32.whl", hash = "sha256:aee397456a29b492c20fda2d8961e1ffb266223625346ace14e4b6d861ba9c80", size = 271152 },
     { url = "https://files.pythonhosted.org/packages/f0/e5/96b8e55271685ddbadc50ce8bc53aa2dff278fb7ac4c2e473df890def2dc/watchfiles-1.0.4-cp313-cp313-win_amd64.whl", hash = "sha256:d6097538b0ae5c1b88c3b55afa245a66793a8fec7ada6755322e465fb1a0e8cc", size = 285216 },
+]
+
+[[package]]
+name = "webencodings"
+version = "0.5.1"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/0b/02/ae6ceac1baeda530866a85075641cec12989bd8d31af6d5ab4a3e8c92f47/webencodings-0.5.1.tar.gz", hash = "sha256:b36a1c245f2d304965eb4e0a82848379241dc04b865afcc4aab16748587e1923", size = 9721 }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/f4/24/2a3e3df732393fed8b3ebf2ec078f05546de641fe1b667ee316ec1dcf3b7/webencodings-0.5.1-py2.py3-none-any.whl", hash = "sha256:a0af1213f3c2226497a97e2b3aa01a7e4bee4f403f95be16fc9acd2947514a78", size = 11774 },
 ]
 
 [[package]]
