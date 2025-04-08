@@ -1,4 +1,6 @@
 import os
+import argparse
+import sys
 import json
 import asyncio
 import hashlib
@@ -8,6 +10,12 @@ import httpx
 import aiofiles
 import fcntl
 import bleach
+
+TIMEOUT_REQUESTS = 30
+TIMEOUT_PLAYWRIGHT = 60
+from src.mcp_doc_retriever.playwright_fetcher import fetch_single_url_playwright
+
+
 
 # Global concurrency and resource controls for Playwright
 playwright_semaphore = asyncio.Semaphore(3)  # Limit concurrent Playwright sessions
@@ -42,366 +50,11 @@ async def fetch_single_url_requests(url, target_local_path, force=False, max_siz
     """
     Download a single URL to a local file asynchronously, with security protections.
 
-    Args:
-        url (str): The URL to fetch.
-        target_local_path (str): The local file path to save content.
-        force (bool): If True, overwrite existing file. Default is False.
-        max_size (int or None): Maximum allowed size in bytes. None means unlimited.
-        allowed_base_dir (str): Base directory within which all downloads must stay.
-
-    Returns:
-        dict: {
-            'status': 'success' | 'skipped' | 'failed',
-            'content_md5': str or None,
-            'detected_links': list of str,
-            'error_message': str or None
-        }
-
-    Security considerations:
-    - The target path is sanitized and must stay within allowed_base_dir.
-    - Downloads are written atomically via a temporary file, renamed on success.
-    - If max_size is set, downloads exceeding this size are aborted.
-    """
-    import tempfile
-    result = {
-        'status': None,
-        'content_md5': None,
-        'detected_links': [],
-        'error_message': None
-    }
-
-    async with requests_semaphore:
-        try:
-            # Create target directory if needed BEFORE atomic existence check
-            try:
-                os.makedirs(os.path.dirname(target_local_path), exist_ok=True)
-            except Exception as e:
-                result['status'] = 'failed'
-                result['error_message'] = f"Directory creation failed: {str(e)}"
-                return result
-
-            import urllib.parse
-            # Decode URL-encoded characters to prevent bypass (handle multiple encodings)
-            decoded_path = target_local_path
-            while '%' in decoded_path:
-                decoded_path = urllib.parse.unquote(decoded_path)
-            # Normalize Windows backslashes to forward slashes for cross-platform traversal protection
-            decoded_path = decoded_path.replace("\\", "/")
-            # Path sanitization
-            norm_base = os.path.abspath(allowed_base_dir)
-            norm_target = os.path.abspath(os.path.normpath(decoded_path))
-            if not norm_target.startswith(norm_base):
-                result['status'] = 'failed'
-                result['error_message'] = f"Target path outside allowed directory: target='{norm_target}' base='{norm_base}'"
-                return result
-
-            # Atomic existence check to prevent TOCTOU race
-            try:
-                flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
-                fd = os.open(norm_target, flags)
-                os.close(fd)
-                # File did not exist before, safe to proceed
-            except FileExistsError:
-                if not force:
-                    result['status'] = 'skipped'
-                    return result
-                # else: force=True, proceed to overwrite later
-            except Exception as e:
-                result['status'] = 'failed'
-                result['error_message'] = f"Atomic existence check failed: {str(e)}"
-                return result
-
-            async with httpx.AsyncClient(follow_redirects=True, timeout=timeout or TIMEOUT_REQUESTS) as client:
-                try:
-                    response = await client.get(url, follow_redirects=True)
-                    response.raise_for_status()
-        
-                    # Paywall/login detection
-                    lowered = response.text.lower()
-                    if any(k in lowered for k in ["login", "sign in", "password", "subscribe", "pwd", "pass_word"]) or \
-                        ("input" in lowered and ("type=\"password\"" in lowered or
-                        "name=\"password\"" in lowered or
-                        "type=\"hidden\" name=\"pwd\"" in lowered or
-                        "type=&#34;password&#34;" in lowered)):
-                        result['status'] = 'failed_paywall'
-                        result['error_message'] = "Paywall or login detected"
-                        return result
-
-                    # Check Content-Length header if present
-                    content_length = response.headers.get("Content-Length")
-                    if content_length is not None:
-                        try:
-                            content_length = int(content_length)
-                            if max_size is not None and content_length > max_size:
-                                result['status'] = 'failed'
-                                result['error_message'] = f"File too large ({content_length} bytes > max_size {max_size})"
-                                return result
-                        except ValueError:
-                            # Ignore invalid header, fallback to streaming check
-                            content_length = None
-
-                    # Acquire global download lock
-                    lock_file = await acquire_global_lock()
-                    if not lock_file:
-                        result['status'] = 'failed'
-                        result['error_message'] = "Download locked by another process"
-                        return result
-                    
-                    try:
-                        # Create temp file
-                        target_dir = os.path.dirname(norm_target)
-                        fd, temp_path = tempfile.mkstemp(dir=target_dir)
-                        os.close(fd)
-
-                        total = 0
-                        md5 = hashlib.md5()
-                        async with aiofiles.open(temp_path, 'wb') as f:
-                            async for chunk in response.aiter_bytes(chunk_size=8192):
-                                total += len(chunk)
-                                if max_size is not None and total > max_size:
-                                    await f.close()
-                                    os.remove(temp_path)
-                                    result['status'] = 'failed'
-                                    result['error_message'] = f"File exceeds max_size during download ({total} bytes)"
-                                    return result
-                                try:
-                                    md5.update(chunk)
-                                except Exception as e:
-                                    await f.close()
-                                    os.remove(temp_path)
-                                    result['status'] = 'failed'
-                                    result['error_message'] = f"MD5 calculation failed during download: {str(e)}"
-                                    return result
-                                await f.write(chunk)
-                        
-                        # Atomic rename
-                        try:
-                            # Before rename, check again for TOCTOU protection
-                            if not force and os.path.exists(norm_target):
-                                # Someone created file during download, skip overwrite
-                                os.remove(temp_path)
-                                result['status'] = 'skipped'
-                                return result
-
-                            os.replace(temp_path, norm_target)
-                            result['content_md5'] = md5.hexdigest()
-                        except Exception as e:
-                            if os.path.exists(temp_path):
-                                os.remove(temp_path)
-                            result['status'] = 'failed'
-                            result['error_message'] = f"File finalize failed: {str(e)}"
-                            return result
-
-                    except Exception as e:
-                        # Cleanup on error
-                        if 'temp_path' in locals() and os.path.exists(temp_path):
-                            os.remove(temp_path)
-                        raise
-                    finally:
-                        # Release lock
-                        try:
-        force (bool): If True, overwrite existing file. Default is False.
-        max_size (int or None): Maximum allowed size in bytes. None means unlimited.
-        allowed_base_dir (str): Base directory within which all downloads must stay.
-
-    Returns:
-        dict: {
-            'status': 'success' | 'skipped' | 'failed',
-            'content_md5': str or None,
-            'detected_links': list of str,
-            'error_message': str or None
-        }
-
-    Security considerations:
-    - The target path is sanitized and must stay within allowed_base_dir.
-    - Downloads are written atomically via a temporary file, renamed on success.
-    - If max_size is set, downloads exceeding this size are aborted.
-    """
-    import tempfile
-    result = {
-        'status': None,
-        'content_md5': None,
-        'detected_links': [],
-        'error_message': None
-    }
-
-    async with requests_semaphore:
-        try:
-            # Create target directory if needed BEFORE atomic existence check
-            try:
-                os.makedirs(os.path.dirname(target_local_path), exist_ok=True)
-            except Exception as e:
-                result['status'] = 'failed'
-                result['error_message'] = f"Directory creation failed: {str(e)}"
-                return result
-            import urllib.parse
-            # Decode URL-encoded characters to prevent bypass (handle multiple encodings)
-            decoded_path = target_local_path
-            while '%' in decoded_path:
-                decoded_path = urllib.parse.unquote(decoded_path)
-            # Normalize Windows backslashes to forward slashes for cross-platform traversal protection
-            decoded_path = decoded_path.replace("\\", "/")
-            # Path sanitization
-            norm_base = os.path.abspath(allowed_base_dir)
-            norm_target = os.path.abspath(os.path.normpath(decoded_path))
-            if not norm_target.startswith(norm_base):
-                result['status'] = 'failed'
-                result['error_message'] = f"Target path outside allowed directory: target='{norm_target}' base='{norm_base}'"
-                return result
-
-            # Atomic existence check to prevent TOCTOU race
-            try:
-                flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
-                fd = os.open(norm_target, flags)
-                os.close(fd)
-                # File did not exist before, safe to proceed
-            except FileExistsError:
-                if not force:
-                    result['status'] = 'skipped'
-                    return result
-                # else: force=True, proceed to overwrite later
-            except Exception as e:
-                result['status'] = 'failed'
-                result['error_message'] = f"Atomic existence check failed: {str(e)}"
-                return result
-
-
-            async with httpx.AsyncClient(follow_redirects=True, timeout=timeout or TIMEOUT_REQUESTS) as client:
-                try:
-                    response = await client.get(url, follow_redirects=True)
-                    response.raise_for_status()
-        
-                    # Paywall/login detection
-                    lowered = response.text.lower()
-                    if any(k in lowered for k in ["login", "sign in", "password", "subscribe", "pwd", "pass_word"]) or \
-                        ("input" in lowered and ("type=\"password\"" in lowered or
-                        "name=\"password\"" in lowered or
-                        "type=\"hidden\" name=\"pwd\"" in lowered or
-                        "type=&#34;password&#34;" in lowered)):
-                        result['status'] = 'failed_paywall'
-                        result['error_message'] = "Paywall or login detected"
-                        return result
-
-                    # Check Content-Length header if present
-                    content_length = response.headers.get("Content-Length")
-                    if content_length is not None:
-                        try:
-                            content_length = int(content_length)
-                            if max_size is not None and content_length > max_size:
-                                result['status'] = 'failed'
-                                result['error_message'] = f"File too large ({content_length} bytes > max_size {max_size})"
-                                return result
-                        except ValueError:
-                            # Ignore invalid header, fallback to streaming check
-                            content_length = None
-
-                    # Acquire global download lock
-                    lock_file = await acquire_global_lock()
-                    if not lock_file:
-                        result['status'] = 'failed'
-                        result['error_message'] = "Download locked by another process"
-                        return result
-                    
-                    try:
-                        # Create temp file
-                        target_dir = os.path.dirname(norm_target)
-                        fd, temp_path = tempfile.mkstemp(dir=target_dir)
-                        os.close(fd)
-
-                        total = 0
-                        md5 = hashlib.md5()
-                        async with aiofiles.open(temp_path, 'wb') as f:
-                            async for chunk in response.aiter_bytes(chunk_size=8192):
-                                total += len(chunk)
-                                if max_size is not None and total > max_size:
-                                    await f.close()
-                                    os.remove(temp_path)
-                                    result['status'] = 'failed'
-                                    result['error_message'] = f"File exceeds max_size during download ({total} bytes)"
-                                    return result
-                                try:
-                                    md5.update(chunk)
-                                except Exception as e:
-                                    await f.close()
-                                    os.remove(temp_path)
-                                    result['status'] = 'failed'
-                                    result['error_message'] = f"MD5 calculation failed during download: {str(e)}"
-                                    return result
-                                await f.write(chunk)
-                        
-                        # Atomic rename
-                        try:
-                            # Before rename, check again for TOCTOU protection
-                            if not force and os.path.exists(norm_target):
-                                # Someone created file during download, skip overwrite
-                                os.remove(temp_path)
-                                result['status'] = 'skipped'
-                                return result
-
-                            os.replace(temp_path, norm_target)
-                            result['content_md5'] = md5.hexdigest()
-                        except Exception as e:
-                            if os.path.exists(temp_path):
-                                os.remove(temp_path)
-                            result['status'] = 'failed'
-                            result['error_message'] = f"File finalize failed: {str(e)}"
-                            return result
-
-                    except Exception as e:
-                        # Cleanup on error
-                        if 'temp_path' in locals() and os.path.exists(temp_path):
-                            os.remove(temp_path)
-                        raise
-                    finally:
-                        # Release lock
-                        try:
-                            fcntl.flock(lock_file, fcntl.LOCK_UN)
-                            lock_file.close()
-                            os.remove(GLOBAL_LOCK_PATH)
-                        except:
-                            pass
-
-                except httpx.RequestError as e:
-                    result['status'] = 'failed_request'
-                    result['error_message'] = f"Request error: {str(e)}"
-                    return result
-                except httpx.HTTPStatusError as e:
-                    result['status'] = 'failed_request'
-                    result['error_message'] = f"HTTP error: {str(e)}"
-                    return result
-                except Exception as e:
-                    # Cleanup temp file on any error
-                    if 'temp_path' in locals() and os.path.exists(temp_path):
-                        os.remove(temp_path)
-                    result['status'] = 'failed'
-                    result['error_message'] = "Download error"  # Consistent with tests
-                    return result
-
-            # Basic link detection (href/src attributes)
-            try:
-                # Read back content for link detection
-                async with aiofiles.open(norm_target, 'rb') as f:
-                    content = await f.read()
-                text_content = content.decode('utf-8', errors='ignore')
-                links = re.findall(r'''(?:href|src)=["'](.*?)["']''', text_content, re.IGNORECASE)
-                result['detected_links'] = links
-            except Exception:
-                # Ignore link detection errors
-                result['detected_links'] = []
-
-            result['status'] = 'success'
-            return result
-
-        except Exception as e:
-            result['status'] = 'failed'
-            result['error_message'] = str(e)
-            return result
-
 
 async def _is_allowed_by_robots(url: str, client: httpx.AsyncClient, robots_cache: dict) -> bool:
     """
-    Basic robots.txt check with caching.
-    """
+    from urllib.parse import urlparse
+async def _is_allowed_by_robots(url: str, client: httpx.AsyncClient, robots_cache: dict) -> bool:
     from urllib.parse import urlparse
 
     parsed = urlparse(url)
@@ -438,6 +91,39 @@ async def _is_allowed_by_robots(url: str, client: httpx.AsyncClient, robots_cach
             return False
     return True
 
+    parsed = urlparse(url)
+    base_url = f"{parsed.scheme}://{parsed.netloc}"
+    robots_url = f"{base_url}/robots.txt"
+
+    if base_url in robots_cache:
+        disallow_list = robots_cache[base_url]
+    else:
+        disallow_list = []
+        try:
+            resp = await client.get(robots_url, timeout=10)
+            if resp.status_code == 200:
+                lines = resp.text.splitlines()
+                user_agent = None
+                for line in lines:
+                    line = line.strip()
+                    if not line or line.startswith('#'):
+                        continue
+                    if line.lower().startswith('user-agent:'):
+                        user_agent = line.split(':',1)[1].strip()
+                    elif line.lower().startswith('disallow:') and (user_agent == '*' or user_agent is None):
+                        path = line.split(':',1)[1].strip()
+                        if path:
+                            disallow_list.append(path)
+            # Cache regardless of success to avoid repeated fetches
+            robots_cache[base_url] = disallow_list
+        except Exception:
+            robots_cache[base_url] = disallow_list  # treat as allowed on error
+
+    # Check if URL path is disallowed
+    for disallowed in disallow_list:
+        if parsed.path.startswith(disallowed):
+            return False
+    return True
 
 async def start_recursive_download(
     start_url: str,
@@ -594,3 +280,74 @@ async def start_recursive_download(
                             await queue.put((abs_link, current_depth + 1))
                     except Exception:
                         continue
+def parse_args():
+    """
+    Parse command-line arguments for the recursive downloader CLI.
+    """
+    parser = argparse.ArgumentParser(description="Recursive Downloader CLI")
+    parser.add_argument(
+        "--url",
+        type=str,
+        default="http://example.com",
+        help="Starting URL to download (default: http://example.com)"
+    )
+    parser.add_argument(
+        "--depth",
+        type=int,
+        default=1,
+        help="Recursion depth (default: 1)"
+    )
+    parser.add_argument(
+        "--force",
+        action="store_true",
+        help="Force overwrite existing files"
+    )
+    parser.add_argument(
+        "--output-dir",
+        type=str,
+        default="downloads",
+        help="Output directory inside the base downloads folder (default: downloads). Must be within the base downloads directory."
+    )
+    return parser.parse_args()
+
+
+def main():
+    """
+    CLI entry point for the recursive downloader.
+    """
+    args = parse_args()
+
+    BASE_DOWNLOAD_DIR = os.path.abspath("downloads")
+    resolved_output_dir = os.path.abspath(args.output_dir)
+
+    # Security check: prevent directory traversal outside base dir
+    if not os.path.commonpath([resolved_output_dir, BASE_DOWNLOAD_DIR]) == BASE_DOWNLOAD_DIR:
+        print(f"Error: Output directory '{resolved_output_dir}' is outside the allowed base directory '{BASE_DOWNLOAD_DIR}'. Aborting.")
+        sys.exit(1)
+
+    # Create the directory if it doesn't exist (safe because it's inside base)
+    os.makedirs(resolved_output_dir, exist_ok=True)
+    args.output_dir = resolved_output_dir
+
+    print("Starting download with parameters:")
+    print(f"  URL: {args.url}")
+    print(f"  Depth: {args.depth}")
+    print(f"  Force overwrite: {args.force}")
+    print(f"  Output directory: {args.output_dir}")
+    print("Beginning recursive download...")
+
+    asyncio.run(
+        start_recursive_download(
+            start_url=args.url,
+            depth=args.depth,
+            force=args.force,
+            download_id="cli_download",
+            base_dir=args.output_dir,
+            use_playwright=False
+        )
+    )
+    print("Download completed.")
+
+
+if __name__ == "__main__":
+    main()

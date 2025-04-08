@@ -115,7 +115,7 @@ gantt
 *   [X] **Task 2.4: Implement Error Handling & Basic Checks**
     *   Action: Enhance fetch functions and orchestration logic. Handle timeouts. Implement basic login/paywall check heuristic (scan content for "Login", "Sign In", password fields) and update index record status if detected. Log errors clearly. Ensure fetch status (`success`, `failed_request`, `failed_robotstxt`, `failed_paywall`, etc.) is recorded in the index file.
     *   Deliverable: Enhanced `downloader.py` with improved error handling and status reporting in index file.
-*   [ ] **Task 2.5: Implement Concurrency Control**
+*   [X] **Task 2.5: Implement Concurrency Control**
     *   Action: Integrate `asyncio.Semaphore` into the recursive download orchestration logic. Use one semaphore for `requests` calls (limit ~10) and a separate one for Playwright calls (limit ~2-4).
     *   Deliverable: Updated `downloader.py` with semaphore-based concurrency limits.
 *   [ ] **Task 2.6: Create Downloader Test Script**

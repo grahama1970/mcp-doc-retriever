@@ -62,4 +62,12 @@
     "solution": "Refactored code to use async context managers with asyncio.Semaphore to ensure proper acquisition and release of locks. Integrated pytest-asyncio to establish a robust asynchronous testing framework and enforced strict concurrency limits for security purposes. The race condition, exemplified by concurrent file writes, was resolved through these improvements.",
     "keywords": ["asyncio", "semaphore", "async context manager", "pytest-asyncio", "concurrency", "race condition", "security"]
   }
+  ,
+  {
+    "role": "Junior Coder",
+    "task_context": "Learned during replacement of unreliable tests with a CLI usage example and subsequent security hardening of the downloader module.",
+    "problem": "Directly running CLI scripts inside packages can cause import errors. Unsanitized CLI path arguments risk path traversal and arbitrary file writes.",
+    "solution": "Instruct users to invoke CLI via `python -m package.module` or `uv run -m package.module` to avoid import issues. Sanitize and resolve CLI path arguments to absolute paths, restricting them within a safe base directory to prevent traversal attacks. Enforce restrictions strictly and provide clear error messages.",
+    "keywords": ["cli", "python -m", "uv run", "security", "path traversal", "sanitization", "file paths", "junior-coder"]
+  }
 ]
