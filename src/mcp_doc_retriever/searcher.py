@@ -192,6 +192,7 @@ def extract_text_with_selector(
                 if all(kw in snippet_lower for kw in lowered_keywords):
                     filtered.append(snippet)
             return filtered
+    return snippets
 
 import json
 import re

@@ -1,0 +1,2 @@
+{"original_url": "http://example.com/page1", "canonical_url": "http://example.com/page1", "local_path": "test_data/sample.html", "fetch_status": "success"}
+{"original_url": "http://example.com/page2", "canonical_url": "http://example.com/page2", "local_path": "test_data/nonexistent.html", "fetch_status": "failed_request"}
