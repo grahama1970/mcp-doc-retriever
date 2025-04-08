@@ -11,15 +11,12 @@ import aiofiles
 import fcntl
 import bleach
 
-TIMEOUT_REQUESTS = 30
-TIMEOUT_PLAYWRIGHT = 60
+from src.mcp_doc_retriever.utils import TIMEOUT_REQUESTS, TIMEOUT_PLAYWRIGHT, playwright_semaphore, requests_semaphore
 from src.mcp_doc_retriever.playwright_fetcher import fetch_single_url_playwright
 
 
 
 # Global concurrency and resource controls for Playwright
-playwright_semaphore = asyncio.Semaphore(3)  # Limit concurrent Playwright sessions
-requests_semaphore = asyncio.Semaphore(10)  # Limit concurrent HTTP requests
 active_browser_count = 0
 browser_count_lock = asyncio.Lock()
 
@@ -52,9 +49,7 @@ async def fetch_single_url_requests(url, target_local_path, force=False, max_siz
 
 
 async def _is_allowed_by_robots(url: str, client: httpx.AsyncClient, robots_cache: dict) -> bool:
-    """
-    from urllib.parse import urlparse
-async def _is_allowed_by_robots(url: str, client: httpx.AsyncClient, robots_cache: dict) -> bool:
+    """Check robots.txt rules for the given URL. Supports multiple user-agent blocks, Allow/Disallow rules, and longest match precedence."""
     from urllib.parse import urlparse
 
     parsed = urlparse(url)
@@ -62,67 +57,61 @@ async def _is_allowed_by_robots(url: str, client: httpx.AsyncClient, robots_cach
     robots_url = f"{base_url}/robots.txt"
 
     if base_url in robots_cache:
-        disallow_list = robots_cache[base_url]
+        rules = robots_cache[base_url]
     else:
-        disallow_list = []
+        rules = {}
+        current_agents = []
         try:
             resp = await client.get(robots_url, timeout=10)
             if resp.status_code == 200:
                 lines = resp.text.splitlines()
-                user_agent = None
                 for line in lines:
                     line = line.strip()
                     if not line or line.startswith('#'):
                         continue
                     if line.lower().startswith('user-agent:'):
-                        user_agent = line.split(':',1)[1].strip()
-                    elif line.lower().startswith('disallow:') and (user_agent == '*' or user_agent is None):
+                        agent = line.split(':',1)[1].strip()
+                        current_agents = [agent]
+                        if agent not in rules:
+                            rules[agent] = []
+                    elif line.lower().startswith('disallow:'):
                         path = line.split(':',1)[1].strip()
-                        if path:
-                            disallow_list.append(path)
-            # Cache regardless of success to avoid repeated fetches
-            robots_cache[base_url] = disallow_list
-        except Exception:
-            robots_cache[base_url] = disallow_list  # treat as allowed on error
-
-    # Check if URL path is disallowed
-    for disallowed in disallow_list:
-        if parsed.path.startswith(disallowed):
-            return False
-    return True
-
-    parsed = urlparse(url)
-    base_url = f"{parsed.scheme}://{parsed.netloc}"
-    robots_url = f"{base_url}/robots.txt"
-
-    if base_url in robots_cache:
-        disallow_list = robots_cache[base_url]
-    else:
-        disallow_list = []
-        try:
-            resp = await client.get(robots_url, timeout=10)
-            if resp.status_code == 200:
-                lines = resp.text.splitlines()
-                user_agent = None
-                for line in lines:
-                    line = line.strip()
-                    if not line or line.startswith('#'):
-                        continue
-                    if line.lower().startswith('user-agent:'):
-                        user_agent = line.split(':',1)[1].strip()
-                    elif line.lower().startswith('disallow:') and (user_agent == '*' or user_agent is None):
+                        for agent in current_agents:
+                            rules.setdefault(agent, []).append(('disallow', path))
+                    elif line.lower().startswith('allow:'):
                         path = line.split(':',1)[1].strip()
-                        if path:
-                            disallow_list.append(path)
-            # Cache regardless of success to avoid repeated fetches
-            robots_cache[base_url] = disallow_list
+                        for agent in current_agents:
+                            rules.setdefault(agent, []).append(('allow', path))
+            robots_cache[base_url] = rules
         except Exception:
-            robots_cache[base_url] = disallow_list  # treat as allowed on error
+            robots_cache[base_url] = rules  # treat as allowed on error
 
-    # Check if URL path is disallowed
-    for disallowed in disallow_list:
-        if parsed.path.startswith(disallowed):
+    # Determine applicable rules
+    # Prefer exact user-agent, fallback to '*'
+    agent_rules = []
+    if '*' in rules:
+        agent_rules = rules.get('*', [])
+    # TODO: support custom user-agent matching if needed
+
+    # Find longest matching rule
+    matched_rule = None
+    matched_length = -1
+    for rule_type, path in agent_rules:
+        if not path:
+            continue
+        if parsed.path.startswith(path):
+            if len(path) > matched_length:
+                matched_rule = (rule_type, path)
+                matched_length = len(path)
+
+    if matched_rule:
+        rule_type, _ = matched_rule
+        if rule_type == 'allow':
+            return True
+        elif rule_type == 'disallow':
             return False
+
+    # Default allow
     return True
 
 async def start_recursive_download(
@@ -281,9 +270,7 @@ async def start_recursive_download(
                     except Exception:
                         continue
 def parse_args():
-    """
-    Parse command-line arguments for the recursive downloader CLI.
-    """
+    """Parse command-line arguments for the recursive downloader CLI."""
     parser = argparse.ArgumentParser(description="Recursive Downloader CLI")
     parser.add_argument(
         "--url",
@@ -312,9 +299,7 @@ def parse_args():
 
 
 def main():
-    """
-    CLI entry point for the recursive downloader.
-    """
+    """CLI entry point for the recursive downloader."""
     args = parse_args()
 
     BASE_DOWNLOAD_DIR = os.path.abspath("downloads")

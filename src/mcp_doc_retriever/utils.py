@@ -1,6 +1,13 @@
 from urllib.parse import urlparse, urlunparse
 import hashlib
 import os
+import asyncio
+
+TIMEOUT_REQUESTS = 30
+TIMEOUT_PLAYWRIGHT = 60
+
+playwright_semaphore = asyncio.Semaphore(3)  # Limit concurrent Playwright sessions
+requests_semaphore = asyncio.Semaphore(10)  # Limit concurrent HTTP requests
 
 def canonicalize_url(url: str) -> str:
     """Normalize URL by:

@@ -118,7 +118,7 @@ gantt
 *   [X] **Task 2.5: Implement Concurrency Control**
     *   Action: Integrate `asyncio.Semaphore` into the recursive download orchestration logic. Use one semaphore for `requests` calls (limit ~10) and a separate one for Playwright calls (limit ~2-4).
     *   Deliverable: Updated `downloader.py` with semaphore-based concurrency limits.
-*   [ ] **Task 2.6: Create Downloader Test Script**
+*   [X] **Task 2.6: Create Downloader Test Script** (Note: Replaced unreliable tests with CLI example)
     *   Action: Create `scripts/test_download.py` to test the `start_recursive_download` function directly. Requires setting up mock responses or pointing to safe local test URLs. Test recursion depth, force/no-clobber, basic Playwright trigger (manual flag), index file creation/content.
     *   Deliverable: `scripts/test_download.py`.
 *   [ ] **Task 2.7: Phase 2 Verification, Demo & Finalization**

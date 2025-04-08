@@ -6,7 +6,8 @@ import fcntl
 import re
 import asyncio
 
-from src.mcp_doc_retriever.downloader import acquire_global_lock, requests_semaphore, TIMEOUT_REQUESTS, GLOBAL_LOCK_PATH
+from src.mcp_doc_retriever.downloader import acquire_global_lock, GLOBAL_LOCK_PATH
+from src.mcp_doc_retriever.utils import requests_semaphore, TIMEOUT_REQUESTS
 
 async def fetch_single_url_requests(url, target_local_path, force=False, max_size=None, allowed_base_dir=".", timeout=None):
     """
