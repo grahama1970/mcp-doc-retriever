@@ -85,7 +85,7 @@ gantt
 *   [X] **Task 1.3: Define Pydantic Models**
     *   Action: Create `src/mcp_doc_retriever/models.py`. Define API models (`DownloadRequest`, `DownloadStatus`, `SearchRequest`, `SearchResultItem`, `SearchResponse`). Define internal `IndexRecord` model (fields: `original_url`, `canonical_url`, `local_path`, `content_md5`, `fetch_status`, `http_status`, `error_message`). Ensure `DownloadStatus` includes `download_id`.
     *   Deliverable: `src/mcp_doc_retriever/models.py` with defined models.
-*   [ ] **Task 1.4: Create Basic FastAPI App & URL Utils**
+*   [X] **Task 1.4: Create Basic FastAPI App & URL Utils**
     *   Action: Create `src/mcp_doc_retriever/main.py` with basic app instance, placeholder endpoints (`/download`, `/search`), and `/health`. Create `src/mcp_doc_retriever/utils.py` with functions for: URL canonicalization (lowercase scheme/host, remove default ports/fragments), generating `download_id` (MD5 of canonical start URL), generating local file path from canonical URL.
     *   Deliverable: `main.py` with basic app/placeholders. `utils.py` with helper functions.
 *   [ ] **Task 1.5: Phase 1 Verification, Demo & Finalization**

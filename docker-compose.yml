@@ -1,0 +1,14 @@
+
+services:
+  mcp_doc_retriever:
+    build: .
+    ports:
+      - "8001:8000"
+    volumes:
+      - mcp_doc_downloads:/app/downloads
+    environment:
+      - PYTHONUNBUFFERED=1
+    restart: unless-stopped
+
+volumes:
+  mcp_doc_downloads:
