@@ -112,7 +112,7 @@ gantt
 *   [X] **Task 2.3: Implement Playwright Fallback & Auto-Detection**
     *   Action: Implement async function `fetch_single_url_playwright`. Add logic to `start_recursive_download` (or a wrapper around fetch functions) to: a) Use Playwright if `use_playwright=True` from API, b) Automatically retry with Playwright if `fetch_single_url_requests` returns content matching the heuristic (e.g., <1024 chars AND contains `<div id="root">`/`<div id="app">` with little other body). Manage Playwright resources. Update index record on retry/success/failure.
     *   Deliverable: Updated `downloader.py` with `fetch_single_url_playwright` and automatic fallback logic based on heuristic.
-*   [ ] **Task 2.4: Implement Error Handling & Basic Checks**
+*   [X] **Task 2.4: Implement Error Handling & Basic Checks**
     *   Action: Enhance fetch functions and orchestration logic. Handle timeouts. Implement basic login/paywall check heuristic (scan content for "Login", "Sign In", password fields) and update index record status if detected. Log errors clearly. Ensure fetch status (`success`, `failed_request`, `failed_robotstxt`, `failed_paywall`, etc.) is recorded in the index file.
     *   Deliverable: Enhanced `downloader.py` with improved error handling and status reporting in index file.
 *   [ ] **Task 2.5: Implement Concurrency Control**

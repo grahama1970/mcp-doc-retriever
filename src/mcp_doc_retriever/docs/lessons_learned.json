@@ -54,5 +54,12 @@
     "problem": "Error messages could leak internal details about malformed responses",
     "solution": "Standardized generic error messages that don't reveal implementation details",
     "keywords": ["security", "error handling", "information leakage", "hacker"]
+  },
+  {
+    "role": "Senior Coder",
+    "task_context": "Implementing concurrency control with asyncio.Semaphore",
+    "problem": "Race conditions occurred due to improper management of asyncio.Semaphore, particularly by not using async context managers. Multiple coroutines accessed shared resources concurrently, leading to data inconsistency.",
+    "solution": "Refactored code to use async context managers with asyncio.Semaphore to ensure proper acquisition and release of locks. Integrated pytest-asyncio to establish a robust asynchronous testing framework and enforced strict concurrency limits for security purposes. The race condition, exemplified by concurrent file writes, was resolved through these improvements.",
+    "keywords": ["asyncio", "semaphore", "async context manager", "pytest-asyncio", "concurrency", "race condition", "security"]
   }
 ]
