@@ -61,13 +61,26 @@
     "problem": "Race conditions occurred due to improper management of asyncio.Semaphore, particularly by not using async context managers. Multiple coroutines accessed shared resources concurrently, leading to data inconsistency.",
     "solution": "Refactored code to use async context managers with asyncio.Semaphore to ensure proper acquisition and release of locks. Integrated pytest-asyncio to establish a robust asynchronous testing framework and enforced strict concurrency limits for security purposes. The race condition, exemplified by concurrent file writes, was resolved through these improvements.",
     "keywords": ["asyncio", "semaphore", "async context manager", "pytest-asyncio", "concurrency", "race condition", "security"]
-  }
-  ,
+  },
   {
     "role": "Junior Coder",
     "task_context": "Learned during replacement of unreliable tests with a CLI usage example and subsequent security hardening of the downloader module.",
     "problem": "Directly running CLI scripts inside packages can cause import errors. Unsanitized CLI path arguments risk path traversal and arbitrary file writes.",
     "solution": "Instruct users to invoke CLI via `python -m package.module` or `uv run -m package.module` to avoid import issues. Sanitize and resolve CLI path arguments to absolute paths, restricting them within a safe base directory to prevent traversal attacks. Enforce restrictions strictly and provide clear error messages.",
     "keywords": ["cli", "python -m", "uv run", "security", "path traversal", "sanitization", "file paths", "junior-coder"]
+  },
+  {
+    "role": "Planner",
+    "task_context": "Task 2.6 (Create Downloader Test Script) & subsequent follow-up.",
+    "problem": "Automated tests involving complex mocking (e.g., for network requests, browser automation) became brittle and unreliable, failing frequently despite implementation efforts. This blocked progress on verifying the component.",
+    "solution": "When automated tests for a component become overly complex or unreliable due to mocking difficulties, consult with the supervisor/user. Consider pivoting the validation strategy away from complex automated tests towards simpler methods like runnable CLI examples or focused integration tests, even if it deviates from the original task plan. Mark the original test task as complete/partially complete with a note, and create a follow-up task for the new validation approach.",
+    "keywords": ["planning", "testing", "mocking", "brittle tests", "validation", "cli example", "adaptation", "task management", "planner", "boomerang mode"]
+  },
+  {
+    "role": "Junior Coder",
+    "task_context": "Implementing secure and efficient keyword scanning over local HTML files",
+    "problem": "Naive HTML keyword scanning risks inefficiency, errors with encodings, scanning sensitive files, or resource exhaustion.",
+    "solution": "When implementing keyword scanning over local HTML files, ensure to: Use robust HTML parsing (e.g., BeautifulSoup) with graceful encoding fallback. Enforce directory restrictions to avoid scanning sensitive files. Impose file size limits to prevent resource exhaustion. Log and skip problematic files rather than failing. Decompose logic into clear, testable components for maintainability. This approach balances speed, accuracy, and security.",
+    "keywords": ["html", "parsing", "keyword scanning", "security", "efficiency", "junior-coder"]
   }
 ]

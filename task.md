@@ -121,7 +121,7 @@ gantt
 *   [X] **Task 2.6: Create Downloader Test Script** (Note: Replaced unreliable tests with CLI example)
     *   Action: Create `scripts/test_download.py` to test the `start_recursive_download` function directly. Requires setting up mock responses or pointing to safe local test URLs. Test recursion depth, force/no-clobber, basic Playwright trigger (manual flag), index file creation/content.
     *   Deliverable: `scripts/test_download.py`.
-*   [ ] **Task 2.7: Phase 2 Verification, Demo & Finalization**
+*   [X] **Task 2.7: Phase 2 Verification, Demo & Finalization**
     *   **Goal:** Verify downloader logic, including recursion, indexing, fallback, concurrency, and error handling via code review and test script. Demonstrate running `test_download.py` showing mirror structure creation, index file content, and explaining the key logic paths (requests, playwright fallback, concurrency limits).
     *   **Actions:** Review code/tests, perform demo, `git add .`, `git commit -m "Complete Phase 2: Downloader Implementation"`, `git tag v0.2-downloader`, potentially update lessons learned.
     *   **Deliverable:**
