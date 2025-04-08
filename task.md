@@ -109,7 +109,7 @@ gantt
 *   [X] **Task 2.2: Implement Recursive Download Orchestration & Indexing**
     *   Action: Implement main async orchestrator function `start_recursive_download`. Takes start URL, depth, force flag, `download_id`. Creates/opens index file (`/app/downloads/index/{download_id}.jsonl`). Manages queue/set of visited canonical URLs. Calls fetch function (initially `fetch_single_url_requests`). Extracts links, canonicalizes them, checks domain/subdomain policy, checks depth, checks `robots.txt` (`utils.py` helper needed). Appends `IndexRecord` to index file for each attempt (success/failure). Respects concurrency limits (see Task 2.6).
     *   Deliverable: Updated `downloader.py` with recursive orchestration logic, domain/depth checking, `robots.txt` checking helper call, index file writing.
-*   [ ] **Task 2.3: Implement Playwright Fallback & Auto-Detection**
+*   [X] **Task 2.3: Implement Playwright Fallback & Auto-Detection**
     *   Action: Implement async function `fetch_single_url_playwright`. Add logic to `start_recursive_download` (or a wrapper around fetch functions) to: a) Use Playwright if `use_playwright=True` from API, b) Automatically retry with Playwright if `fetch_single_url_requests` returns content matching the heuristic (e.g., <1024 chars AND contains `<div id="root">`/`<div id="app">` with little other body). Manage Playwright resources. Update index record on retry/success/failure.
     *   Deliverable: Updated `downloader.py` with `fetch_single_url_playwright` and automatic fallback logic based on heuristic.
 *   [ ] **Task 2.4: Implement Error Handling & Basic Checks**

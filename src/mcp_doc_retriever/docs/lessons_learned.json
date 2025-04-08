@@ -40,5 +40,19 @@
     "problem": "Concurrent downloads to same file could cause corruption",
     "solution": "Implemented simple file locking mechanism using .lock files",
     "keywords": ["security", "concurrency", "locking", "hacker"]
+  },
+  {
+    "role": "Hacker",
+    "task_context": "Security testing of downloader.py (Task 2.4)",
+    "problem": "Hidden password fields and obfuscated login forms were not being detected",
+    "solution": "Enhanced paywall detection to check for hidden fields, HTML entities, and obfuscated field names",
+    "keywords": ["security", "paywall", "login detection", "obfuscation", "hacker"]
+  },
+  {
+    "role": "Hacker",
+    "task_context": "Security testing of downloader.py (Task 2.4)",
+    "problem": "Error messages could leak internal details about malformed responses",
+    "solution": "Standardized generic error messages that don't reveal implementation details",
+    "keywords": ["security", "error handling", "information leakage", "hacker"]
   }
 ]

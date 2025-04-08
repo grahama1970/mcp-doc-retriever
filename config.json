@@ -1,0 +1,4 @@
+{
+  "timeout_requests": 30,
+  "timeout_playwright": 30
+}

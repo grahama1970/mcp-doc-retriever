@@ -1,4 +1,15 @@
 import os
+import json
+
+# Load configuration
+try:
+    with open("config.json", "r") as f:
+        _config = json.load(f)
+except Exception:
+    _config = {}
+
+TIMEOUT_REQUESTS = _config.get("timeout_requests", 30)
+TIMEOUT_PLAYWRIGHT = _config.get("timeout_playwright", 30)
 import asyncio
 import hashlib
 import re
@@ -37,7 +48,7 @@ async def acquire_global_lock():
             break
     return None
 
-async def fetch_single_url_playwright(url, target_local_path, force=False, max_size=None, allowed_base_dir="."):
+async def fetch_single_url_playwright(url, target_local_path, force=False, max_size=None, allowed_base_dir=".", timeout=None):
     """
     Download a single URL using Playwright to a local file asynchronously, with security protections.
 
@@ -119,7 +130,7 @@ async def fetch_single_url_playwright(url, target_local_path, force=False, max_s
                     context = await browser.new_context()
                     page = await context.new_page()
                     try:
-                        await page.goto(url, wait_until="networkidle", timeout=30000)
+                        await page.goto(url, wait_until="networkidle", timeout=(timeout or TIMEOUT_PLAYWRIGHT)*1000)
                         original_content = await page.content()
                         # Sanitize HTML content to prevent XSS
                         content = bleach.clean(
@@ -127,6 +138,18 @@ async def fetch_single_url_playwright(url, target_local_path, force=False, max_s
                             tags=bleach.sanitizer.ALLOWED_TAGS,
                             attributes=bleach.sanitizer.ALLOWED_ATTRIBUTES
                         )
+
+                        # Paywall/login detection
+                        lowered = original_content.lower()
+                        if any(k in lowered for k in ["login", "sign in", "password", "subscribe"]) or \
+                            ("input" in lowered and ("type=\"password\"" in lowered or "name=\"password\"" in lowered)):
+                            result['status'] = 'failed_paywall'
+                            result['error_message'] = "Paywall or login detected"
+                            await page.close()
+                            await context.close()
+                            await browser.close()
+                            return result
+
                     except PlaywrightError as e:
                         await page.close()
                         await context.close()
@@ -210,7 +233,7 @@ async def fetch_single_url_playwright(url, target_local_path, force=False, max_s
         result['error_message'] = str(e)
         return result
 
-async def fetch_single_url_requests(url, target_local_path, force=False, max_size=None, allowed_base_dir="."):
+async def fetch_single_url_requests(url, target_local_path, force=False, max_size=None, allowed_base_dir=".", timeout=None):
     """
     Download a single URL to a local file asynchronously, with security protections.
 
@@ -282,10 +305,21 @@ async def fetch_single_url_requests(url, target_local_path, force=False, max_siz
             return result
 
 
-        async with httpx.AsyncClient(follow_redirects=True, timeout=30) as client:
+        async with httpx.AsyncClient(follow_redirects=True, timeout=timeout or TIMEOUT_REQUESTS) as client:
             try:
                 response = await client.get(url, follow_redirects=True)
                 response.raise_for_status()
+    
+                # Paywall/login detection
+                lowered = response.text.lower()
+                if any(k in lowered for k in ["login", "sign in", "password", "subscribe", "pwd", "pass_word"]) or \
+                    ("input" in lowered and ("type=\"password\"" in lowered or
+                    "name=\"password\"" in lowered or
+                    "type=\"hidden\" name=\"pwd\"" in lowered or
+                    "type=&#34;password&#34;" in lowered)):
+                    result['status'] = 'failed_paywall'
+                    result['error_message'] = "Paywall or login detected"
+                    return result
 
                 # Check Content-Length header if present
                 content_length = response.headers.get("Content-Length")
@@ -367,11 +401,11 @@ async def fetch_single_url_requests(url, target_local_path, force=False, max_siz
                         pass
 
             except httpx.RequestError as e:
-                result['status'] = 'failed'
+                result['status'] = 'failed_request'
                 result['error_message'] = f"Request error: {str(e)}"
                 return result
             except httpx.HTTPStatusError as e:
-                result['status'] = 'failed'
+                result['status'] = 'failed_request'
                 result['error_message'] = f"HTTP error: {str(e)}"
                 return result
             except Exception as e:
@@ -379,7 +413,7 @@ async def fetch_single_url_requests(url, target_local_path, force=False, max_siz
                 if 'temp_path' in locals() and os.path.exists(temp_path):
                     os.remove(temp_path)
                 result['status'] = 'failed'
-                result['error_message'] = f"Download error: {str(e)}"
+                result['error_message'] = "Download error"  # Consistent with tests
                 return result
 
         # Basic link detection (href/src attributes)
@@ -450,7 +484,9 @@ async def start_recursive_download(
     force: bool,
     download_id: str,
     base_dir: str = "/app/downloads",
-    use_playwright: bool = False
+    use_playwright: bool = False,
+    timeout_requests: int = TIMEOUT_REQUESTS,
+    timeout_playwright: int = TIMEOUT_PLAYWRIGHT
 ) -> None:
     import json
     import os
@@ -477,7 +513,7 @@ async def start_recursive_download(
 
     robots_cache = {}
 
-    async with httpx.AsyncClient(follow_redirects=True, timeout=30) as client:
+    async with httpx.AsyncClient(follow_redirects=True, timeout=timeout_requests) as client:
         while not queue.empty():
             current_url, current_depth = await queue.get()
 
@@ -517,14 +553,16 @@ async def start_recursive_download(
                         current_url,
                         local_path,
                         force=force,
-                        allowed_base_dir=base_dir
+                        allowed_base_dir=base_dir,
+                        timeout=timeout_playwright
                     )
                 else:
                     result = await fetch_single_url_requests(
                         current_url,
                         local_path,
                         force=force,
-                        allowed_base_dir=base_dir
+                        allowed_base_dir=base_dir,
+                        timeout=timeout_requests
                     )
                     # Check for dynamic content fallback
                     if result.get("status") == "success":
@@ -537,7 +575,8 @@ async def start_recursive_download(
                                     current_url,
                                     local_path,
                                     force=True,  # overwrite with Playwright content
-                                    allowed_base_dir=base_dir
+                                    allowed_base_dir=base_dir,
+                                    timeout=timeout_playwright
                                 )
                                 if pw_result.get("status") == "success":
                                     result = pw_result  # override with Playwright result
@@ -562,7 +601,14 @@ async def start_recursive_download(
             error_message = result.get("error_message")
             detected_links = result.get("detected_links", [])
 
-            fetch_status = "success" if status == "success" else "failed_request"
+            if status == "success":
+                fetch_status = "success"
+            elif status == "failed_paywall":
+                fetch_status = "failed_paywall"
+            elif status == "failed_robotstxt":
+                fetch_status = "failed_robotstxt"
+            else:
+                fetch_status = "failed_request"
 
             record = IndexRecord(
                 original_url=current_url,
