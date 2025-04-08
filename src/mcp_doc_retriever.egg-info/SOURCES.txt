@@ -1,5 +1,6 @@
 README.md
 pyproject.toml
+src/mcp_doc_retriever/downloader.py
 src/mcp_doc_retriever/main.py
 src/mcp_doc_retriever/models.py
 src/mcp_doc_retriever/utils.py

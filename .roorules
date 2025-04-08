@@ -1,0 +1,7 @@
+- Always use uv to add packages; do not use pip for installations.
+- We use 'uv run' for executing python and pytest scripts. We do NOT use python directly to execute scripts.
+- For all Code-specific roles. Be proactive when coding. Try to fix failed tests and code. Do NOT simplly report back that the tests/code failed. Iterate until you fix the code. Follow your protocol. 
+- Explain your reasoning before providing code.
+- Focus on code readability and maintainability.
+- Do NOT be clever. Always prefer the simplest solution that is most likely to work and is NOT brittle
+- Prioritize using the most common libraries in the community.

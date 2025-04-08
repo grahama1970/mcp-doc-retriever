@@ -105,7 +105,7 @@ Language: Python 3.10+
 
 Web Framework: FastAPI
 
-HTTP Client: Requests
+HTTP Client: Requests, HTTPX
 
 Browser Automation: Playwright
 
@@ -118,6 +118,10 @@ Concurrency: Asyncio (with Semaphores)
 Containerization: Docker, Docker Compose
 
 Dependency Management: uv, pyproject.toml
+
+Additional Dependencies:
+- `httpx` (>=0.27.0) added as an async-capable HTTP client alongside `requests`.
+- `aiofiles` (>=0.8.0) for async file operations
 
 🤖 Roomodes Workflow (Project Construction)
 This project is designed to be built and maintained using the Roomodes framework, leveraging specialized AI agents for different tasks as defined in the .roomodes configuration file. The primary flow for building features or fixing bugs involves:
@@ -202,7 +206,13 @@ Copy .env.example to .env if specific runtime configurations are needed.
 
 # Coder agents would typically run these commands when tasked
 uv venv # Create virtual environment
-uv sync # Install dependencies
+uv sync # Install dependencies (including httpx)
+
+# To add new dependencies, always use uv add:
+uv add <package>
+
+# For example, to add aiofiles:
+uv add aiofiles
 # playwright install # Install browsers locally if needed for non-Docker tests
 Use code with caution.
 Bash
@@ -407,3 +417,53 @@ File Headers: Standard headers required in src/mcp_doc_retriever/.
 File Size: Aim for < 500 lines per .py file.
 
 lessons_learned.json: Central KB for agent insights located at src/mcp_doc_retriever/docs/lessons_learned.json.
+
+---
+
+## 🧪 Running Tests with `run_tests.sh`
+
+This project includes a test harness script `run_tests.sh` to verify environment setup and run core tests.
+
+### Setup Instructions
+
+1. **Ensure the script is executable:**
+
+```bash
+chmod +x run_tests.sh
+```
+
+2. **Run the script:**
+
+```bash
+./run_tests.sh
+```
+
+The script will activate the `.venv` virtual environment if not already active, verify dependencies, and execute tests.
+
+### Permission Requirements
+
+- The script **must be executable** (`chmod +x run_tests.sh`).
+- Run it **directly** as `./run_tests.sh` rather than `bash run_tests.sh` for best results.
+- If you see a **Permission denied** error, ensure executable permissions are set.
+
+### Troubleshooting
+
+- **Permission denied:**
+  Run `chmod +x run_tests.sh` and try again.
+
+- **Missing dependencies:**
+  Inside the virtual environment, run:
+
+```bash
+uv sync
+```
+
+- **Virtual environment issues:**
+  Activate it explicitly:
+
+```bash
+source .venv/bin/activate
+```
+
+- **Warnings about pip:**
+  `uv` manages dependencies without pip; these warnings can be ignored if tests pass.

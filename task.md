@@ -88,7 +88,7 @@ gantt
 *   [X] **Task 1.4: Create Basic FastAPI App & URL Utils**
     *   Action: Create `src/mcp_doc_retriever/main.py` with basic app instance, placeholder endpoints (`/download`, `/search`), and `/health`. Create `src/mcp_doc_retriever/utils.py` with functions for: URL canonicalization (lowercase scheme/host, remove default ports/fragments), generating `download_id` (MD5 of canonical start URL), generating local file path from canonical URL.
     *   Deliverable: `main.py` with basic app/placeholders. `utils.py` with helper functions.
-*   [ ] **Task 1.5: Phase 1 Verification, Demo & Finalization**
+*   [X] **Task 1.5: Phase 1 Verification, Demo & Finalization**
     *   **Goal:** Verify project setup, dependencies, models, basic FastAPI app, and utility functions. Demonstrate project structure, models, running basic FastAPI app showing endpoints, and testing utility functions (URL canonicalization, ID generation, path generation). Explain basic setup.
     *   **Actions:** Review artifacts, perform demo, `git add .`, `git commit -m "Complete Phase 1: Project Setup & Basic FastAPI"`, `git tag v0.1-setup`, potentially update lessons learned.
     *   **Deliverable:**

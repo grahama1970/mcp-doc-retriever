@@ -12,5 +12,33 @@
     "problem": "Commands installed via `uv sync` (e.g., `uvicorn`) were not found in the PATH when executed directly in the shell, causing 'command not found' errors.",
     "solution": "Use `uv run <command>` to execute commands that rely on packages installed within the `uv` virtual environment. This ensures the command runs within the correct context and can locate the necessary executables.",
     "keywords": ["uv", "run", "sync", "dependencies", "execution", "environment", "path", "command not found", "planner", "uvicorn"]
+  },
+  {
+    "role": "Senior Coder",
+    "task_context": "Dependency management, adding/updating/removing packages",
+    "problem": "Forgetting to use `uv add` leads to inconsistent environments, missing lock updates, or broken virtualenvs.",
+    "solution": "Always use `uv add <package>` (or `uv pip` commands) to add, update, or remove dependencies. Never edit `pyproject.toml` manually or use `pip` directly.",
+    "keywords": ["uv", "dependency management", "add", "update", "remove", "pyproject.toml", "lockfile", "best practice", "senior-coder"]
+  },
+  {
+    "role": "Senior Coder",
+    "task_context": "Encountering missing dependencies or ModuleNotFoundError during script execution or runtime",
+    "problem": "Reporting missing packages as errors instead of proactively fixing them immediately, causing unnecessary delays and user intervention.",
+    "solution": "When encountering missing dependencies (e.g., ModuleNotFoundError), immediately attempt to fix by running `uv add <package>` without waiting for user input. Then re-run the failing command or script to verify resolution.",
+    "keywords": ["dependency", "ModuleNotFoundError", "uv add", "proactive", "environment repair", "senior-coder", "debugging", "automation"]
+  },
+  {
+    "role": "Hacker",
+    "task_context": "Security testing of downloader.py",
+    "problem": "Double-encoded path traversal (%252e%252e%252f) bypassed security checks",
+    "solution": "Added multiple URL decoding passes to handle nested encoding attempts",
+    "keywords": ["security", "path traversal", "encoding", "hacker"]
+  },
+  {
+    "role": "Hacker",
+    "task_context": "Security testing of downloader.py",
+    "problem": "Concurrent downloads to same file could cause corruption",
+    "solution": "Implemented simple file locking mechanism using .lock files",
+    "keywords": ["security", "concurrency", "locking", "hacker"]
   }
 ]
