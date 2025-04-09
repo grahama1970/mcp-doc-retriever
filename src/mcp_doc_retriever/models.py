@@ -1,12 +1,61 @@
+"""
+Pydantic models for MCP Document Retriever.
+
+Defines:
+- DownloadRequest
+- DownloadStatus
+- SearchRequest
+- SearchResultItem
+- SearchResponse
+- IndexRecord
+
+Links:
+- Pydantic: https://docs.pydantic.dev/
+- Python typing: https://docs.python.org/3/library/typing.html
+
+Sample DownloadRequest input:
+{
+  "url": "https://docs.python.org/3/",
+  "use_playwright": false,
+  "force": false,
+  "depth": 1
+}
+
+Sample DownloadStatus output:
+{
+  "status": "started",
+  "message": "Download initiated for https://docs.python.org/3/",
+  "download_id": "uuid-string"
+}
+
+Sample SearchRequest input:
+{
+  "download_id": "uuid-string",
+  "scan_keywords": ["Python"],
+  "extract_selector": "title",
+  "extract_keywords": null
+}
+
+Sample SearchResponse output:
+{
+  "results": [
+    {
+      "original_url": "https://docs.python.org/3/",
+      "extracted_content": "Welcome to Python 3.x documentation",
+      "selector_matched": "title"
+    }
+  ]
+}
+"""
+
 from pydantic import BaseModel
 from typing import List, Optional, Literal
 
 class DownloadRequest(BaseModel):
     """Request model for initiating a download"""
     url: str
-    use_playwright: bool = False
     force: bool = False
-    depth: int = 2
+    depth: int = 1
 
 class DownloadStatus(BaseModel):
     """Response model for download status"""
@@ -40,3 +89,28 @@ class IndexRecord(BaseModel):
     fetch_status: Literal["success", "failed_request", "failed_robotstxt", "failed_paywall"]
     http_status: Optional[int] = None
     error_message: Optional[str] = None
+
+if __name__ == "__main__":
+    # Minimal usage verification
+    req = DownloadRequest(url="https://docs.python.org/3/")
+    print("DownloadRequest:", req.json())
+
+    status = DownloadStatus(status="started", message="Download initiated", download_id="uuid-string")
+    print("DownloadStatus:", status.json())
+
+    search_req = SearchRequest(
+        download_id="uuid-string",
+        scan_keywords=["Python"],
+        extract_selector="title",
+        extract_keywords=None
+    )
+    print("SearchRequest:", search_req.json())
+
+    search_resp = SearchResponse(results=[
+        SearchResultItem(
+            original_url="https://docs.python.org/3/",
+            extracted_content="Welcome to Python 3.x documentation",
+            selector_matched="title"
+        )
+    ])
+    print("SearchResponse:", search_resp.json())

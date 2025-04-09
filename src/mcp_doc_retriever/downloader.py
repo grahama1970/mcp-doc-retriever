@@ -1,3 +1,29 @@
+"""
+Module: downloader.py
+
+Description:
+Asynchronous recursive downloader with security protections, robots.txt compliance, atomic file writes, and optional Playwright fallback for dynamic content.
+
+Third-party packages:
+- httpx: https://www.python-httpx.org/
+- aiofiles: https://github.com/Tinche/aiofiles
+- Playwright: https://playwright.dev/python/
+- bleach: https://bleach.readthedocs.io/en/latest/
+
+Sample input:
+start_url = "https://docs.python.org/3/"
+depth = 0
+force = True
+download_id = "test_download"
+base_dir = "downloads_test"
+
+Expected output:
+- Downloads https://docs.python.org/3/ to downloads_test/content/docs.python.org/3/index.html
+- Creates an index file at downloads_test/index/test_download.jsonl with fetch status and metadata
+- Handles robots.txt, paywalls, and dynamic content fallback
+
+"""
+
 import os
 import argparse
 import sys
@@ -18,8 +44,8 @@ import logging # Added import
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
 
-from src.mcp_doc_retriever.utils import TIMEOUT_REQUESTS, TIMEOUT_PLAYWRIGHT, playwright_semaphore, requests_semaphore
-from src.mcp_doc_retriever.playwright_fetcher import fetch_single_url_playwright
+from mcp_doc_retriever.utils import TIMEOUT_REQUESTS, TIMEOUT_PLAYWRIGHT, playwright_semaphore, requests_semaphore
+from mcp_doc_retriever.playwright_fetcher import fetch_single_url_playwright
 
 
 
@@ -325,8 +351,8 @@ async def start_recursive_download(
     import asyncio
     from urllib.parse import urlparse
 
-    from src.mcp_doc_retriever.utils import canonicalize_url, url_to_local_path
-    from src.mcp_doc_retriever.models import IndexRecord
+    from mcp_doc_retriever.utils import canonicalize_url, url_to_local_path
+    from mcp_doc_retriever.models import IndexRecord
 
     # Prepare index file path
     index_dir = os.path.join(base_dir, "index")

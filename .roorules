@@ -1,10 +1,37 @@
+# Global Tooling & Execution Rules
 - Always use uv to add packages; do not use pip for installations.
 - We use 'uv run' for executing python and pytest scripts. We do NOT use python directly to execute scripts.
-- For all Code-specific roles. Be proactive when coding. Try to fix failed tests and code. Do NOT simply report back that the tests/code failed. Iterate until you fix the code. Follow your protocol.
+
+# General Coding & Development Principles
+- For all Code-specific roles: Be proactive when coding. Try to fix failed tests and code. Do NOT simply report back that the tests/code failed. Iterate until you fix the code, **starting with standalone script execution (see rule below)**. Follow your protocol.
 - Explain your reasoning before providing code.
 - Focus on code readability and maintainability.
 - Do NOT be clever. Always prefer the simplest solution that is most likely to work and is NOT brittle
 - Prioritize using the most common libraries in the community.
+
+# Specific Feature Implementation Rules
 - **When implementing download or search features, always test with a real, reachable URL that returns non-trivial HTML (not just example.com).**
 - **Verify that the downloaded content is saved locally and that the search function returns expected results on this content before reporting success.**
 - **Avoid placeholder URLs or superficial tests that only check API wiring. Ensure minimum working functionality is verified.**
+
+# Module Structure & Documentation Rules
+- Every core module file **must** include at the top:
+  - A **description** of the module's purpose.
+  - **Links** to third-party package documentation used in the file.
+  - A **sample input** and **expected output** for its main function(s).
+- Every core module file **must** include a **minimal real-world usage function** (e.g., `if __name__ == "__main__":`) that verifies its core functionality independently, without Docker.
+- No file should exceed **500 lines**; refactor into smaller modules if necessary.
+
+# Mandatory Verification Sequence
+- **Mandatory Standalone Module Verification:** For all Code-specific roles (Coders, Refactorer): Before reporting completion or proceeding to integration testing (e.g., Docker builds, multi-module tests), you **MUST** first successfully execute the primary script file's `if __name__ == '__main__':` block using `uv run <filename.py>`. This block (required by module structure rules) must verify the script's core functionality independently and pass without errors. Only after this standalone check succeeds should you proceed to other testing or integration steps.
+
+# Standard Procedures (Consolidated from Modes)
+- **Error/Ambiguity Handling - Step 1:** When encountering errors or ambiguity, **always** consult relevant entries in `src/mcp_doc_retriever/docs/lessons_learned.json` first for known patterns or solutions, unless explicitly instructed otherwise by the mode definition.
+- **Error/Ambiguity Handling - Step 2 (Code Context):** For tasks involving code understanding, implementation, or refactoring, consult relevant documentation within `repo_docs/` after checking lessons learned.
+- **Error/Ambiguity Handling - Step 3 (External Research):** If project documentation and lessons learned are insufficient, use `perplexity-ask` via `mcp` for external research (e.g., library issues, general patterns).
+
+# **NEW: Self-Recovery Procedure: Revert Failed Edits**
+- **Self-Recovery Rule:** For all Code-editing roles (`Intern Coder`, `Junior Coder`, `Senior Coder`/`code`, `Refactorer`): If a file editing tool (`apply_diff`, `write_to_file`) results in a clearly failed state, OR if after making edits, subsequent checks reveal the file is broken and you **cannot fix it** after applying standard error handling procedures (KB, docs, reasonable fix attempts), you **MUST** proactively attempt to revert the specific file(s) to their last committed state before reporting failure. Execute `git checkout -- <filename>` (replacing `<filename>` with the actual file path) using the `command` tool for each affected file. Report that you performed this revert action when you subsequently report the failure or escalate.
+
+# Lesson Logging
+- **Lesson Logging Rule:** If you successfully employ a novel technique, pattern, or workaround not present in the KB, *or* if prompted by your delegator, add a concise lesson learned entry to `src/mcp_doc_retriever/docs/lessons_learned.json`. Clearly state your role in the entry (e.g., 'Role: Junior Coder'). **Note:** Modes `Intern Coder` and `Presenter` do not log lessons.

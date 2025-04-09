@@ -1,6 +1,32 @@
+"""
+Playwright-based async fetcher for MCP Document Retriever.
+
+- Fetches a single URL using Playwright with concurrency control.
+- Saves HTML content atomically.
+- Extracts links from the page.
+
+Links:
+- Playwright Python: https://playwright.dev/python/
+- aiofiles: https://github.com/Tinche/aiofiles
+- asyncio: https://docs.python.org/3/library/asyncio.html
+
+Sample input:
+url = "https://docs.python.org/3/"
+target_local_path = "./downloads/content/docs.python.org/index.html"
+force = False
+
+Sample output:
+{
+  'status': 'success',
+  'content_md5': 'md5hash',
+  'detected_links': ['https://docs.python.org/3/tutorial/', ...],
+  'error_message': None
+}
+"""
+
 import hashlib
 import re
-from src.mcp_doc_retriever.utils import playwright_semaphore, TIMEOUT_PLAYWRIGHT
+from mcp_doc_retriever.utils import playwright_semaphore, TIMEOUT_PLAYWRIGHT
 
 async def fetch_single_url_playwright(url, target_local_path, force=False, allowed_base_dir=".", timeout=None):
     """
@@ -9,7 +35,7 @@ async def fetch_single_url_playwright(url, target_local_path, force=False, allow
     import os
     import urllib.parse
     import aiofiles
-    import tempfile # Added import
+    import tempfile
     from playwright.async_api import async_playwright
 
     result = {
@@ -37,13 +63,10 @@ async def fetch_single_url_playwright(url, target_local_path, force=False, allow
             target_dir = os.path.dirname(norm_target)
             os.makedirs(target_dir, exist_ok=True)
 
-            # Atomic existence check (similar to requests_fetcher, but simpler for Playwright context)
-            # If file exists and force is False, skip.
+            # Atomic existence check
             if not force and os.path.exists(norm_target):
                  result['status'] = 'skipped'
                  return result
-            # If file exists and force is True, we'll overwrite via os.replace later.
-            # If file doesn't exist, we proceed.
 
             async with async_playwright() as p:
                 browser = await p.chromium.launch(headless=True)
@@ -59,7 +82,6 @@ async def fetch_single_url_playwright(url, target_local_path, force=False, allow
                     base_url=None,
                     locale="en-US"
                 )
-                # Block images, media, fonts to reduce resource use
                 await context.route("**/*", lambda route, request: (
                     route.abort() if request.resource_type in ["image", "media", "font"] else route.continue_()
                 ))
@@ -67,7 +89,6 @@ async def fetch_single_url_playwright(url, target_local_path, force=False, allow
                 page = await context.new_page()
                 try:
                     await page.goto(url, timeout=(timeout or TIMEOUT_PLAYWRIGHT) * 1000)
-                    # Strip scripts to avoid DOM-based attacks
                     await page.evaluate("""
                         for (const script of document.querySelectorAll('script')) {
                             script.remove();
@@ -80,32 +101,27 @@ async def fetch_single_url_playwright(url, target_local_path, force=False, allow
 
             # Write to temp file first
             fd, temp_path = tempfile.mkstemp(dir=target_dir, suffix=".html")
-            os.close(fd) # Close file descriptor from mkstemp
+            os.close(fd)
 
             try:
                 async with aiofiles.open(temp_path, 'w', encoding='utf-8') as f:
                     await f.write(content)
 
-                # Atomic rename/replace
-                # Check again before replacing for TOCTOU protection if not forcing
                 if not force and os.path.exists(norm_target):
-                    os.remove(temp_path) # Clean up temp file
-                    result['status'] = 'skipped' # File appeared during download
+                    os.remove(temp_path)
+                    result['status'] = 'skipped'
                     return result
 
-                os.replace(temp_path, norm_target) # Atomically move temp file to final location
+                os.replace(temp_path, norm_target)
 
             except Exception as e:
-                # Ensure temp file cleanup on error during write/replace
                 if os.path.exists(temp_path):
                     os.remove(temp_path)
-                raise e # Re-raise the exception to be caught by the outer handler
+                raise e
 
-            # Compute hash
             md5 = hashlib.md5(content.encode('utf-8')).hexdigest()
             result['content_md5'] = md5
 
-            # Extract links
             links = re.findall(r'''(?:href|src)=["'](.*?)["']''', content, re.IGNORECASE)
             result['detected_links'] = links
 
@@ -116,3 +132,10 @@ async def fetch_single_url_playwright(url, target_local_path, force=False, allow
             result['status'] = 'failed'
             result['error_message'] = str(e)
             return result
+
+if __name__ == "__main__":
+    import asyncio
+    url = "https://docs.python.org/3/"
+    target_path = "./downloads/content/docs.python.org/index_playwright.html"
+    result = asyncio.run(fetch_single_url_playwright(url, target_path, force=True))
+    print("Playwright fetch result:", result)
