@@ -9,6 +9,7 @@ async def fetch_single_url_playwright(url, target_local_path, force=False, allow
     import os
     import urllib.parse
     import aiofiles
+    import tempfile # Added import
     from playwright.async_api import async_playwright
 
     result = {
@@ -32,13 +33,17 @@ async def fetch_single_url_playwright(url, target_local_path, force=False, allow
                 result['error_message'] = f"Target path outside allowed directory: {norm_target}"
                 return result
 
-            # Skip if exists and not force
-            if os.path.exists(norm_target) and not force:
-                result['status'] = 'skipped'
-                return result
+            # Create target directory if needed BEFORE atomic check
+            target_dir = os.path.dirname(norm_target)
+            os.makedirs(target_dir, exist_ok=True)
 
-            # Create target directory
-            os.makedirs(os.path.dirname(norm_target), exist_ok=True)
+            # Atomic existence check (similar to requests_fetcher, but simpler for Playwright context)
+            # If file exists and force is False, skip.
+            if not force and os.path.exists(norm_target):
+                 result['status'] = 'skipped'
+                 return result
+            # If file exists and force is True, we'll overwrite via os.replace later.
+            # If file doesn't exist, we proceed.
 
             async with async_playwright() as p:
                 browser = await p.chromium.launch(headless=True)
@@ -73,9 +78,28 @@ async def fetch_single_url_playwright(url, target_local_path, force=False, allow
                     await context.close()
                     await browser.close()
 
-            # Save sanitized content
-            async with aiofiles.open(norm_target, 'w', encoding='utf-8') as f:
-                await f.write(content)
+            # Write to temp file first
+            fd, temp_path = tempfile.mkstemp(dir=target_dir, suffix=".html")
+            os.close(fd) # Close file descriptor from mkstemp
+
+            try:
+                async with aiofiles.open(temp_path, 'w', encoding='utf-8') as f:
+                    await f.write(content)
+
+                # Atomic rename/replace
+                # Check again before replacing for TOCTOU protection if not forcing
+                if not force and os.path.exists(norm_target):
+                    os.remove(temp_path) # Clean up temp file
+                    result['status'] = 'skipped' # File appeared during download
+                    return result
+
+                os.replace(temp_path, norm_target) # Atomically move temp file to final location
+
+            except Exception as e:
+                # Ensure temp file cleanup on error during write/replace
+                if os.path.exists(temp_path):
+                    os.remove(temp_path)
+                raise e # Re-raise the exception to be caught by the outer handler
 
             # Compute hash
             md5 = hashlib.md5(content.encode('utf-8')).hexdigest()
@@ -92,5 +116,3 @@ async def fetch_single_url_playwright(url, target_local_path, force=False, allow
             result['status'] = 'failed'
             result['error_message'] = str(e)
             return result
-async def fetch_single_url_playwright(*args, **kwargs):
-    raise NotImplementedError("fetch_single_url_playwright must be patched in tests or implemented")

@@ -1,7 +1,10 @@
 - Always use uv to add packages; do not use pip for installations.
 - We use 'uv run' for executing python and pytest scripts. We do NOT use python directly to execute scripts.
-- For all Code-specific roles. Be proactive when coding. Try to fix failed tests and code. Do NOT simplly report back that the tests/code failed. Iterate until you fix the code. Follow your protocol. 
+- For all Code-specific roles. Be proactive when coding. Try to fix failed tests and code. Do NOT simply report back that the tests/code failed. Iterate until you fix the code. Follow your protocol.
 - Explain your reasoning before providing code.
 - Focus on code readability and maintainability.
 - Do NOT be clever. Always prefer the simplest solution that is most likely to work and is NOT brittle
 - Prioritize using the most common libraries in the community.
+- **When implementing download or search features, always test with a real, reachable URL that returns non-trivial HTML (not just example.com).**
+- **Verify that the downloaded content is saved locally and that the search function returns expected results on this content before reporting success.**
+- **Avoid placeholder URLs or superficial tests that only check API wiring. Ensure minimum working functionality is verified.**

@@ -1,34 +1,34 @@
-# Use official Python image
-FROM python:3.11-slim
-
-# Set environment variables
-ENV PYTHONDONTWRITEBYTECODE 1
-ENV PYTHONUNBUFFERED 1
-
-# Install system dependencies
-RUN apt-get update && apt-get install -y \
-    gcc \
-    python3-dev \
-    && rm -rf /var/lib/apt/lists/*
-
-# Install Playwright browsers
-RUN pip install playwright && \
-    playwright install && \
-    playwright install-deps
+# Use official Python 3.10 slim image
+FROM python:3.10-slim
 
 # Set working directory
 WORKDIR /app
 
-# Copy project files
-COPY pyproject.toml uv.lock ./
-COPY src/ ./src/
+# Install uv package manager
+RUN pip install --no-cache-dir uv
 
-# Install Python dependencies
-RUN pip install uv && \
-    uv pip install --system -e .
+# Copy dependency files first for better caching
+COPY . .
 
-# Expose the port the app runs on
+# Install Python dependencies using uv
+RUN uv sync --frozen
+
+# Disable apt signature verification errors workaround
+RUN echo 'Acquire::AllowInsecureRepositories "true";' > /etc/apt/apt.conf.d/99insecure \
+ && echo 'Acquire::AllowDowngradeToInsecureRepositories "true";' >> /etc/apt/apt.conf.d/99insecure
+
+# Playwright is installed via uv sync from pyproject.toml, removing redundant install step
+
+# Install Playwright browsers and their OS dependencies using uv run
+RUN uv run python -m playwright install --with-deps chromium
+# Copy the rest of the application code
+COPY . .
+
+# Expose port 8000 for the FastAPI app
 EXPOSE 8000
 
-# Command to run the application
-CMD ["uvicorn", "src.mcp_doc_retriever.main:app", "--host", "0.0.0.0", "--port", "8000"]
+# Define a volume for downloads
+VOLUME ["/app/downloads"]
+
+# Set the entrypoint to run the FastAPI app with uvicorn
+CMD ["uv", "run", "--", "python", "-m", "uvicorn", "src.mcp_doc_retriever.main:app", "--host", "0.0.0.0", "--port", "8000"]

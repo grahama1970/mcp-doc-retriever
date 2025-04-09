@@ -22,7 +22,7 @@ This project is intended to be built and potentially maintained using an agentic
 *   ✅ **Concurrency Control:** Uses `asyncio` Semaphores to limit concurrent `requests` and Playwright operations.
 *   ✅ **Structured I/O:** Uses Pydantic models for API requests/responses.
 *   ✅ **MCP Compatible:** Designed for easy integration as an MCP server.
-*   ✅ **Dockerized & Self-Contained:** Packaged with `docker-compose`, includes Playwright browser dependencies in the image, uses a named volume for persistent storage.
+*   ✅ **Dockerized & Self-Contained:** Packaged with `docker compose`, includes Playwright browser dependencies in the image, uses a named volume for persistent storage.
 *   ✅ **Standard Packaging:** Uses `pyproject.toml` and `uv`.
 
 ## 🏗️ Runtime Architecture Diagram

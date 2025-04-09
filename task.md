@@ -163,19 +163,19 @@ gantt
 
 **Phase 4: API Integration & Containerization**
 
-*   [ ] **Task 4.1: Integrate Downloader with /download Endpoint**
+*   [X] **Task 4.1: Integrate Downloader with /download Endpoint**
     *   Action: Update `main.py`. Implement `/download` endpoint. Canonicalize input URL, generate `download_id`. Return `{"status": "started", "download_id": "..."}` immediately. Use FastAPI's `BackgroundTasks` (or similar async pattern) to run the `start_recursive_download` function from `downloader.py` in the background. Pass necessary parameters (URL, depth, force, `download_id`). Handle immediate errors like invalid start URL format.
     *   Deliverable: Functional `/download` endpoint triggering background download task and returning immediate status.
-*   [ ] **Task 4.2: Integrate Searcher with /search Endpoint**
+*   [X] **Task 4.2: Integrate Searcher with /search Endpoint**
     *   Action: Update `main.py`. Implement `/search` endpoint. Takes `SearchRequest`. Checks if index file for `download_id` exists. Calls `perform_search` function from `searcher.py`. Returns `SearchResponse` containing results or appropriate error (e.g., 404 if index not found).
     *   Deliverable: Functional `/search` endpoint calling search logic.
-*   [ ] **Task 4.3: Create Dockerfile**
+*   [X] **Task 4.3: Create Dockerfile**
     *   Action: Create `Dockerfile`. Include Python setup, dependency install (`uv sync --frozen`), **`RUN playwright install --with-deps`** (installs browsers and needed OS libs), copy source code, set workdir, define volume mount point `/app/downloads`, expose port 8000, set entrypoint (`uvicorn`). Define `DOWNLOAD_BASE_DIR=/app/downloads`.
     *   Deliverable: `Dockerfile`.
-*   [ ] **Task 4.4: Create docker-compose.yml**
+*   [X] **Task 4.4: Create docker-compose.yml**
     *   Action: Create `docker-compose.yml`. Define `mcp-doc-retriever` service. Build from context. Map ports (e.g., `8001:8000`). Define volume mapping `download_data:/app/downloads` (using a named volume `download_data` is often better than host path).
     *   Deliverable: `docker-compose.yml`.
-*   [ ] **Task 4.5: Create API Test Script**
+*   [X] **Task 4.5: Create API Test Script**
     *   Action: Create `scripts/test_api.py`. Make calls to `/download` (for a small, safe site), wait briefly (since status endpoint is V2), then call `/search` using the returned `download_id`. Verify expected structure of search results. Test `force` flag.
     *   Deliverable: `scripts/test_api.py`.
 *   [ ] **Task 4.6: Phase 4 Verification, Demo & Finalization**

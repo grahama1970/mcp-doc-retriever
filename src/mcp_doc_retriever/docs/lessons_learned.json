@@ -96,5 +96,26 @@
     "problem": "File paths from untrusted sources, such as index files, may be manipulated to escape allowed directories and access unauthorized files.",
     "solution": "Enforce allowed directory constraints by resolving file paths to their real absolute paths and verifying they remain within the intended base directory using commonpath checks. This prevents unauthorized file access via directory traversal.",
     "keywords": ["security", "directory traversal", "realpath", "commonpath", "file access", "hacker"]
+  },
+  {
+    "role": "Planner",
+    "task_context": "Task 4.3 Dockerfile creation and verification",
+    "problem": "Planner did not automatically delegate the next task to Boomerang Mode or log lessons learned after phase completion, contrary to the `.roomodes` instructions.",
+    "solution": "Planner must immediately delegate the next `[ ]` task to Boomerang Mode upon phase completion, and log any planning lessons learned. This ensures continuous, automated project flow as designed.",
+    "keywords": ["planner", "boomerang mode", "automation", "task delegation", "lessons learned", "roomodes compliance"]
+  },
+  {
+    "role": "Boomerang Mode",
+    "task_context": "Executing multi-phase tasks (e.g., API, Docker, Compose, Tests)",
+    "problem": "Boomerang Mode sometimes skipped explicit delegation of implementation, demo, or security sub-tasks to specialist Coders, Presenter, or Hacker, instead summarizing or attempting completion itself. This violates the orchestration protocol in `.roomodes`.",
+    "solution": "Boomerang Mode must always explicitly delegate all implementation, demo, security, and refactor sub-tasks via `new_task` to the appropriate specialist mode. Only after all required steps succeed should it report overall task completion to Planner.",
+    "keywords": ["boomerang mode", "delegation", "specialist roles", "protocol compliance", "roomodes", "workflow"]
+  },
+  {
+    "role": "Planner/Boomerang",
+    "task_context": "Verifying Coder implementation before demos",
+    "problem": "Coders were using placeholder URLs (e.g., example.com) for testing download/search features, which only verified API wiring, not actual content retrieval or processing. This led to demo failures.",
+    "solution": "Coders must explicitly test download/search features using real, reachable URLs that return non-trivial HTML. They must verify that content is saved locally and that search functions return expected results on this content before reporting completion. This requirement is now enforced in `.roorules` and Coder instructions in `.roomodes`.",
+    "keywords": ["testing", "verification", "coder", "download", "search", "placeholder url", "minimum viable functionality", "roomodes", "roorules"]
   }
 ]
