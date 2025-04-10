@@ -51,7 +51,7 @@ graph TD
             BGTask -- Update Status (running) --> TaskStore
             BGTask -- Orchestrate --> Downloader("⚙️ Async Downloader - downloader.py")
 
-            Downloader -- URL --> Utils %% Canonicalize for Visited Check
+            Downloader -- "URL" --> Utils %% Canonicalize for Visited Check
             Downloader -- Check Robots --> Robots("🤖 Robots.py")
             Downloader -- Check Path Exists? --> ContentFS("📁 Content Volume - /app/downloads/content")
             Downloader -- Fetch --> FetchChoice{"Use Playwright Flag?"}
@@ -64,7 +64,7 @@ graph TD
             FetchResult -- Save Content --> ContentFS %% Save to hostname/path/file.html
             Downloader -- Log Attempt --> IndexFS("💾 Index Volume - /app/downloads/index") %% Write IndexRecord to {download_id}.jsonl
             FetchResult -- Extract Links (BS4) --> LinkQueue("/Links/")
-            LinkQueue -- Next URL --> Downloader %% Recursive Loop (Check Domain/Depth/Visited/Robots)
+            LinkQueue -- "Next URL" --> Downloader %% Recursive Loop (Check Domain/Depth/Visited/Robots)
 
             BGTask -- Update Status (completed/failed) --> TaskStore
             Downloader -- Errors --> BGTask %% Report errors to wrapper
