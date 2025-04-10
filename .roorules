@@ -8,6 +8,7 @@
 - Focus on code readability and maintainability.
 - Do NOT be clever. Always prefer the simplest solution that is most likely to work and is NOT brittle
 - Prioritize using the most common libraries in the community.
+- Always prefer official, maintained containers or packages over custom builds when available. Avoid redundant work and reduce maintenance burden by leveraging upstream expertise.
 
 # Module Structure & Documentation Rules
 - Every core module file **must** include at the top:

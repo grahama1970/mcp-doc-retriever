@@ -110,5 +110,12 @@
     "problem": "Using `uv run` in Dockerfile CMD caused runtime failures because it's designed for development environments, not production.",
     "solution": "For production Dockerfiles using uv: 1) Install dependencies with `uv pip install --system`, 2) Use direct `python -m` commands in CMD instead of `uv run`, 3) Keep `uv run` only for build-time operations like Playwright install.",
     "keywords": ["docker", "uv", "production", "deployment", "container", "senior-coder"]
+  },
+  {
+    "role": "Senior Coder",
+    "task_context": "Dockerfile creation and Playwright integration (Phase 4)",
+    "problem": "Attempted to create a custom Dockerfile with manual Playwright installation, despite an official, maintained Playwright Docker image existing. This led to wasted effort, build failures, and redundant maintenance.",
+    "solution": "Always check for and prefer official, maintained containers or packages before attempting custom builds. This reduces maintenance burden, avoids redundant work, and leverages upstream expertise.",
+    "keywords": ["docker", "playwright", "official images", "best practices", "containerization", "senior-coder", "maintenance"]
   }
 ]
