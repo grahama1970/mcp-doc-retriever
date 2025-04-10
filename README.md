@@ -228,6 +228,46 @@ The application uses the following configuration sources, in order of precedence
 
 The final `DOWNLOAD_BASE_DIR` path is always resolved to an absolute path. Inside the Docker container, the relevant base path is `/app/downloads`, which is mapped to the persistent `download_data` volume.
 
+## 🛠️ MCP Server Configuration Example
+
+Below is an example MCP server configuration for use with this containerized service.
+
+### Docker Compose Snippet
+
+```yaml
+version: '3.8'
+services:
+  mcp-doc-retriever:
+    image: mcp-doc-retriever:latest
+    container_name: mcp-doc-retriever
+    environment:
+      - MCP_DOWNLOAD_BASE_DIR=/app/downloads
+      - MCP_TIMEOUT_REQUESTS=30
+    volumes:
+      - download_data:/app/downloads
+    ports:
+      - "8001:8000"
+    # Define tools exposed by this MCP server
+    labels:
+      - "mcp.tools=doc_download,doc_search"
+
+volumes:
+  download_data:
+```
+
+### Explanation of Key Fields
+
+- **volumes:** Maps the persistent Docker volume `download_data` to `/app/downloads` inside the container, where downloaded content and indexes are stored.
+- **environment:**
+  - `MCP_DOWNLOAD_BASE_DIR`: Base directory inside the container for downloads (default `/app/downloads`).
+  - `MCP_TIMEOUT_REQUESTS`: Timeout in seconds for HTTP requests.
+- **labels:**
+  - `mcp.tools`: Comma-separated list of tool names exposed by this MCP server (`doc_download`, `doc_search`).
+- **ports:** Maps host port 8001 to container port 8000 (FastAPI server).
+
+This configuration ensures persistent storage, exposes the download and search tools, and sets environment variables compatible with the current container setup.
+
+
 ## 🛠️ Setup & Installation
 
 **Prerequisites:**

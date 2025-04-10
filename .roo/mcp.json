@@ -1,0 +1,9 @@
+{
+  "mcpServers": {
+    "DocRetriever": {
+      "type": "sse",
+      "url": "http://localhost:8001",
+      "description": "Document retrieval service"
+    }
+  }
+}

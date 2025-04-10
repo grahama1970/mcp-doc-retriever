@@ -11,7 +11,10 @@ MCP Document Retriever FastAPI server.
 
 import logging
 import os
-import sys # Added sys
+import sys
+from sse_starlette.sse import EventSourceResponse
+import asyncio
+import json
 
 # --- Force Root Logger Configuration ---
 # Attempt to configure logging ASAP, before FastAPI/Uvicorn might interfere
@@ -49,6 +52,27 @@ DOWNLOAD_TASKS: Dict[str, TaskStatus] = {}
 
 app = FastAPI(title="MCP Document Retriever")
 logger = logging.getLogger(__name__) # Use logger
+
+@app.get("/")
+async def mcp_sse():
+    """SSE endpoint for MCP protocol connection"""
+    async def event_generator():
+        # Send initial connection confirmation
+        yield {
+            "event": "connected",
+            "data": json.dumps({
+                "service": "DocRetriever",
+                "version": "1.0",
+                "capabilities": ["document_download", "document_search"]
+            })
+        }
+        
+        # Send periodic heartbeats
+        while True:
+            await asyncio.sleep(15)
+            yield {"event": "heartbeat", "data": json.dumps({"status": "active"})}
+    
+    return EventSourceResponse(event_generator())
 
 # --- Background Task Wrapper ---
 
