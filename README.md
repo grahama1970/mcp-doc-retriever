@@ -40,34 +40,34 @@ graph TD
     end
 
     subgraph "Docker Container: mcp-doc-retriever"
-        FAPI(🌐 FastAPI - main.py) -- Manages --> TaskStore((📝 Task Status Store))
+        FAPI("🌐 FastAPI - main.py") -- Manages --> TaskStore("📝 Task Status Store")
 
         subgraph "Download Flow"
             direction TB
-            FAPI -- Parse Request --> Utils(🔧 Utils - utils.py)
+            FAPI -- Parse Request --> Utils("🔧 Utils - utils.py")
             Utils -- Canonical URL --> FAPI
             FAPI -- Create Task Entry (pending) --> TaskStore
-            FAPI -- Generate download_id --> BGTask{🚀 Start Background Task}
+            FAPI -- Generate download_id --> BGTask{"🚀 Start Background Task"}
             BGTask -- Update Status (running) --> TaskStore
-            BGTask -- Orchestrate --> Downloader(⚙️ Async Downloader - downloader.py)
+            BGTask -- Orchestrate --> Downloader("⚙️ Async Downloader - downloader.py")
 
-            Downloader -- URL --> Utils # Canonicalize for Visited Check
-            Downloader -- Check Robots --> Robots(🤖 Robots.py)
-            Downloader -- Check Path Exists? --> ContentFS[(📁 Content Volume - /app/downloads/content)]
-            Downloader -- Fetch --> FetchChoice{Use Playwright Flag?}
-            FetchChoice -- httpx --> RequestsLib(🐍 httpx)
-            FetchChoice -- Playwright --> PlaywrightLib(🎭 Playwright)
-            RequestsLib -- Fetch --> TargetSite[🌍 Target Website]
+            Downloader -- URL --> Utils %% Canonicalize for Visited Check
+            Downloader -- Check Robots --> Robots("🤖 Robots.py")
+            Downloader -- Check Path Exists? --> ContentFS("📁 Content Volume - /app/downloads/content")
+            Downloader -- Fetch --> FetchChoice{"Use Playwright Flag?"}
+            FetchChoice -- httpx --> RequestsLib("🐍 httpx")
+            FetchChoice -- Playwright --> PlaywrightLib("🎭 Playwright")
+            RequestsLib -- Fetch --> TargetSite("🌍 Target Website")
             PlaywrightLib -- Render & Fetch --> TargetSite
-            TargetSite -- HTML --> FetchResult{Content + Status}
+            TargetSite -- HTML --> FetchResult{"Content + Status"}
             FetchResult -- Calculate MD5 --> Downloader
-            FetchResult -- Save Content --> ContentFS # Save to hostname/path/file.html
-            Downloader -- Log Attempt --> IndexFS[(💾 Index Volume - /app/downloads/index)] # Write IndexRecord to {download_id}.jsonl
-            FetchResult -- Extract Links (BS4) --> LinkQueue[/Links/]
-            LinkQueue -- Next URL --> Downloader # Recursive Loop (Check Domain/Depth/Visited/Robots)
+            FetchResult -- Save Content --> ContentFS %% Save to hostname/path/file.html
+            Downloader -- Log Attempt --> IndexFS("💾 Index Volume - /app/downloads/index") %% Write IndexRecord to {download_id}.jsonl
+            FetchResult -- Extract Links (BS4) --> LinkQueue("/Links/")
+            LinkQueue -- Next URL --> Downloader %% Recursive Loop (Check Domain/Depth/Visited/Robots)
 
             BGTask -- Update Status (completed/failed) --> TaskStore
-            Downloader -- Errors --> BGTask # Report errors to wrapper
+            Downloader -- Errors --> BGTask %% Report errors to wrapper
         end
 
         subgraph "Status Check Flow"
@@ -78,31 +78,19 @@ graph TD
 
         subgraph "Search Flow"
             direction TB
-            FAPI -- Parse SearchRequest --> Searcher(🔎 Searcher - searcher.py)
+            FAPI -- Parse SearchRequest --> Searcher("🔎 Searcher - searcher.py")
             Searcher -- Read Index File (download_id) --> IndexFS
             IndexFS -- Relevant Local Paths --> Searcher
-            Searcher -- Phase 1: Scan Keywords --> ContentFS # Read content from relevant paths
-            ContentFS -- Content --> ScanFunc(📜 Decode & Scan Text)
+            Searcher -- Phase 1: Scan Keywords --> ContentFS %% Read content from relevant paths
+            ContentFS -- Content --> ScanFunc("📜 Decode & Scan Text")
             ScanFunc -- Candidate Paths --> Searcher
-            Searcher -- Phase 2: Parse & Extract --> ContentFS # Read content from candidate paths
-            ContentFS -- Content --> ExtractFunc(🌳 BS4 Parse & Select Text)
+            Searcher -- Phase 2: Parse & Extract --> ContentFS %% Read content from candidate paths
+            ContentFS -- Content --> ExtractFunc("🌳 BS4 Parse & Select Text")
             ExtractFunc -- Extracted Text --> Searcher
-            Searcher -- Lookup Original URL --> IndexFS # Use index to map path back to URL
+            Searcher -- Lookup Original URL --> IndexFS %% Use index to map path back to URL
             Searcher -- Formatted Results --> FAPI
         end
-
     end
-
-    %% Styling
-    classDef default fill:#f9f,stroke:#333,stroke-width:2px
-    classDef agent fill:#ccf,stroke:#333
-    classDef fastapi fill:#9cf,stroke:#333
-    classDef logic fill:#9fc,stroke:#333
-    classDef io fill:#ff9,stroke:#333
-    classDef external fill:#ccc,stroke:#333
-    classDef data fill:#eee,stroke:#666,stroke-dasharray: 5 5
-    classDef util fill:#fdf,stroke:#333
-    classDef store fill:#fcc,stroke:#333
 ```
 
 *Diagram Key:* The diagram shows the agent interaction flow (1-6), including the status polling step. Internal components like the downloader, fetchers, searcher, utils, and storage (index/content volumes, task status store) are depicted.
