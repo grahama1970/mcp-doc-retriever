@@ -90,21 +90,25 @@ async def _prepare_target_path(
         decoded_path = decoded_path.replace("\\", "/")
 
         norm_base = os.path.abspath(allowed_base_dir)
-        # Treat target_local_path as relative to base_dir
-        # First normalize the path to remove any '..' or '.'
-        normalized_path = os.path.normpath(decoded_path)
-        # Split into components and rejoin to ensure clean path
-        path_parts = []
-        for part in normalized_path.split(os.sep):
-            if part == '..':
-                if path_parts:
-                    path_parts.pop()
-            elif part and part != '.':
-                path_parts.append(part)
-        clean_path = os.path.join(*path_parts)
-        
-        # Join with base dir and make absolute
-        norm_target = os.path.abspath(os.path.join(norm_base, clean_path))
+        # If target path already contains base dir, use it directly
+        if decoded_path.startswith(norm_base):
+            norm_target = os.path.abspath(decoded_path)
+        else:
+            # Treat target_local_path as relative to base_dir
+            # First normalize the path to remove any '..' or '.'
+            normalized_path = os.path.normpath(decoded_path)
+            # Split into components and rejoin to ensure clean path
+            path_parts = []
+            for part in normalized_path.split(os.sep):
+                if part == '..':
+                    if path_parts:
+                        path_parts.pop()
+                elif part and part != '.':
+                    path_parts.append(part)
+            clean_path = os.path.join(*path_parts)
+            
+            # Join with base dir and make absolute
+            norm_target = os.path.abspath(os.path.join(norm_base, clean_path))
 
         # Final check: Does the resolved absolute target path start with the resolved absolute base path?
         # Add os.sep to prevent partial matches (e.g., /base/dir matching /base/directory)

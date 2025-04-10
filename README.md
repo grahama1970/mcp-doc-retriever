@@ -51,44 +51,52 @@ graph TD
             BGTask -- Update Status (running) --> TaskStore
             BGTask -- Orchestrate --> Downloader("⚙️ Async Downloader - downloader.py")
 
-            Downloader -- "URL" --> Utils %% Canonicalize for Visited Check
-            Downloader -- Check Robots --> Robots("🤖 Robots.py")
-            Downloader -- Check Path Exists? --> ContentFS("📁 Content Volume - /app/downloads/content")
-            Downloader -- Fetch --> FetchChoice{"Use Playwright Flag?"}
-            FetchChoice -- httpx --> RequestsLib("🐍 httpx")
-            FetchChoice -- Playwright --> PlaywrightLib("🎭 Playwright")
-            RequestsLib -- Fetch --> TargetSite("🌍 Target Website")
-            PlaywrightLib -- Render & Fetch --> TargetSite
-            TargetSite -- HTML --> FetchResult{"Content + Status"}
-            FetchResult -- Calculate MD5 --> Downloader
-            FetchResult -- Save Content --> ContentFS %% Save to hostname/path/file.html
-            Downloader -- Log Attempt --> IndexFS("💾 Index Volume - /app/downloads/index") %% Write IndexRecord to {download_id}.jsonl
-            FetchResult -- Extract Links (BS4) --> LinkQueue("/Links/")
-            LinkQueue -- "Next URL" --> Downloader %% Recursive Loop (Check Domain/Depth/Visited/Robots)
+            Downloader -- "URL" --> Utils
+            %% Canonicalize for Visited Check
+            Downloader -- "Check Robots" --> Robots("🤖 Robots.py")
+            Downloader -- "Check Path Exists?" --> ContentFS("📁 Content Volume - /app/downloads/content")
+            Downloader -- "Fetch" --> FetchChoice{"Use Playwright Flag?"}
+            FetchChoice -- "httpx" --> RequestsLib("🐍 httpx")
+            FetchChoice -- "Playwright" --> PlaywrightLib("🎭 Playwright")
+            RequestsLib -- "Fetch" --> TargetSite("🌍 Target Website")
+            PlaywrightLib -- "Render & Fetch" --> TargetSite
+            TargetSite -- "HTML" --> FetchResult{"Content + Status"}
+            FetchResult -- "Calculate MD5" --> Downloader
+            FetchResult -- "Save Content" --> ContentFS
+            %% Save to hostname/path/file.html
+            Downloader -- "Log Attempt" --> IndexFS("💾 Index Volume - /app/downloads/index")
+            %% Write IndexRecord to {download_id}.jsonl
+            FetchResult -- "Extract Links (BS4)" --> LinkQueue("/Links/")
+            LinkQueue -- "Next URL" --> Downloader
+            %% Recursive Loop (Check Domain/Depth/Visited/Robots)
 
-            BGTask -- Update Status (completed/failed) --> TaskStore
-            Downloader -- Errors --> BGTask %% Report errors to wrapper
+            BGTask -- "Update Status (completed/failed)" --> TaskStore
+            Downloader -- "Errors" --> BGTask
+            %% Report errors to wrapper
         end
 
         subgraph "Status Check Flow"
             direction TB
-            FAPI -- Get download_id --> TaskStore
-            TaskStore -- Return Status --> FAPI
+            FAPI -- "Get download_id" --> TaskStore
+            TaskStore -- "Return Status" --> FAPI
         end
 
         subgraph "Search Flow"
             direction TB
-            FAPI -- Parse SearchRequest --> Searcher("🔎 Searcher - searcher.py")
-            Searcher -- Read Index File (download_id) --> IndexFS
-            IndexFS -- Relevant Local Paths --> Searcher
-            Searcher -- Phase 1: Scan Keywords --> ContentFS %% Read content from relevant paths
-            ContentFS -- Content --> ScanFunc("📜 Decode & Scan Text")
-            ScanFunc -- Candidate Paths --> Searcher
-            Searcher -- Phase 2: Parse & Extract --> ContentFS %% Read content from candidate paths
-            ContentFS -- Content --> ExtractFunc("🌳 BS4 Parse & Select Text")
-            ExtractFunc -- Extracted Text --> Searcher
-            Searcher -- Lookup Original URL --> IndexFS %% Use index to map path back to URL
-            Searcher -- Formatted Results --> FAPI
+            FAPI -- "Parse SearchRequest" --> Searcher("🔎 Searcher - searcher.py")
+            Searcher -- "Read Index File (download_id)" --> IndexFS
+            IndexFS -- "Relevant Local Paths" --> Searcher
+            Searcher -- "Phase 1: Scan Keywords" --> ContentFS
+            %% Read content from relevant paths
+            ContentFS -- "Content" --> ScanFunc("📜 Decode & Scan Text")
+            ScanFunc -- "Candidate Paths" --> Searcher
+            Searcher -- "Phase 2: Parse & Extract" --> ContentFS
+            %% Read content from candidate paths
+            ContentFS -- "Content" --> ExtractFunc("🌳 BS4 Parse & Select Text")
+            ExtractFunc -- "Extracted Text" --> Searcher
+            Searcher -- "Lookup Original URL" --> IndexFS
+            %% Use index to map path back to URL
+            Searcher -- "Formatted Results" --> FAPI
         end
     end
 ```
