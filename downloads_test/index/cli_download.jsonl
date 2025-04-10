@@ -1,2 +1,0 @@
-{"original_url":"https://example.com","canonical_url":"https://example.com","local_path":"downloads_test/content/example.com/index.html","content_md5":null,"fetch_status":"failed_request","http_status":null,"error_message":"'NoneType' object has no attribute 'get'"}
-{"original_url":"not_a_url","canonical_url":"not_a_url","local_path":"downloads_test/content/not_a_url","content_md5":null,"fetch_status":"failed_request","http_status":null,"error_message":"'NoneType' object has no attribute 'get'"}

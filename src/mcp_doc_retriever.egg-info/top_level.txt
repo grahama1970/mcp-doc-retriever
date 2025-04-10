@@ -1,1 +1,0 @@
-mcp_doc_retriever

@@ -2,6 +2,7 @@ version: '3.8'
 
 services:
   mcp-doc-retriever:
+    container_name: mcp-doc-retriever
     build: .
     ports:
       - "8001:8000"

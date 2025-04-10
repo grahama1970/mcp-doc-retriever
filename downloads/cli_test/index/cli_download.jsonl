@@ -1,1 +1,0 @@
-{"original_url":"https://httpbin.org/html","canonical_url":"https://httpbin.org/html","local_path":"/Users/robert/Documents/dev/workspace/experiments/mcp-doc-retriver/downloads/cli_test/content/httpbin.org/html","content_md5":null,"fetch_status":"failed_request","http_status":null,"error_message":"'NoneType' object has no attribute 'get'"}

@@ -9,11 +9,6 @@
 - Do NOT be clever. Always prefer the simplest solution that is most likely to work and is NOT brittle
 - Prioritize using the most common libraries in the community.
 
-# Specific Feature Implementation Rules
-- **When implementing download or search features, always test with a real, reachable URL that returns non-trivial HTML (not just example.com).**
-- **Verify that the downloaded content is saved locally and that the search function returns expected results on this content before reporting success.**
-- **Avoid placeholder URLs or superficial tests that only check API wiring. Ensure minimum working functionality is verified.**
-
 # Module Structure & Documentation Rules
 - Every core module file **must** include at the top:
   - A **description** of the module's purpose.
@@ -23,15 +18,24 @@
 - No file should exceed **500 lines**; refactor into smaller modules if necessary.
 
 # Mandatory Verification Sequence
-- **Mandatory Standalone Module Verification:** For all Code-specific roles (Coders, Refactorer): Before reporting completion or proceeding to integration testing (e.g., Docker builds, multi-module tests), you **MUST** first successfully execute the primary script file's `if __name__ == '__main__':` block using `uv run <filename.py>`. This block (required by module structure rules) must verify the script's core functionality independently and pass without errors. Only after this standalone check succeeds should you proceed to other testing or integration steps.
+- **Mandatory Post-Edit Standalone Module Verification:** For all Code-specific roles (Coders, Refactorer): **Immediately after successfully applying edits** to a primary script file (e.g., using `apply_diff`, `write_to_file`), and **before** proceeding to any other testing (like integration tests, Docker builds) or reporting completion, you **MUST** execute the modified script's `if __name__ == '__main__':` block using `uv run <filename.py>`. This standalone execution must pass without errors and verify the script's core functionality as intended by the `__main__` block (required by module structure rules). If this check fails, you must attempt to fix the code (following standard error handling procedures and the proactive fixing principle) before proceeding. Only after this standalone check *succeeds* should you consider the edit successful and move to subsequent steps or report completion.
 
 # Standard Procedures (Consolidated from Modes)
 - **Error/Ambiguity Handling - Step 1:** When encountering errors or ambiguity, **always** consult relevant entries in `src/mcp_doc_retriever/docs/lessons_learned.json` first for known patterns or solutions, unless explicitly instructed otherwise by the mode definition.
 - **Error/Ambiguity Handling - Step 2 (Code Context):** For tasks involving code understanding, implementation, or refactoring, consult relevant documentation within `repo_docs/` after checking lessons learned.
 - **Error/Ambiguity Handling - Step 3 (External Research):** If project documentation and lessons learned are insufficient, use `perplexity-ask` via `mcp` for external research (e.g., library issues, general patterns).
+*Note: Custom mode instructions specify the escalation path if these steps fail.*
 
 # **NEW: Self-Recovery Procedure: Revert Failed Edits**
-- **Self-Recovery Rule:** For all Code-editing roles (`Intern Coder`, `Junior Coder`, `Senior Coder`/`code`, `Refactorer`): If a file editing tool (`apply_diff`, `write_to_file`) results in a clearly failed state, OR if after making edits, subsequent checks reveal the file is broken and you **cannot fix it** after applying standard error handling procedures (KB, docs, reasonable fix attempts), you **MUST** proactively attempt to revert the specific file(s) to their last committed state before reporting failure. Execute `git checkout -- <filename>` (replacing `<filename>` with the actual file path) using the `command` tool for each affected file. Report that you performed this revert action when you subsequently report the failure or escalate.
+- **Self-Recovery Rule:** For all Code-editing roles (`Intern Coder`, `Junior Coder`, `Senior Coder`/`code`, `Refactorer`): If a file editing tool (`apply_diff`, `write_to_file`) results in a clearly failed state, OR if after making edits, subsequent checks (including the Mandatory Post-Edit Standalone Verification) reveal the file is broken and you **cannot fix it** after applying standard error handling procedures (KB, docs, reasonable fix attempts), you **MUST** proactively attempt to revert the specific file(s) to their last committed state before reporting failure. Execute `git checkout -- <filename>` (replacing `<filename>` with the actual file path) using the `command` tool for each affected file. Report that you performed this revert action when you subsequently report the failure or escalate.
 
 # Lesson Logging
-- **Lesson Logging Rule:** If you successfully employ a novel technique, pattern, or workaround not present in the KB, *or* if prompted by your delegator, add a concise lesson learned entry to `src/mcp_doc_retriever/docs/lessons_learned.json`. Clearly state your role in the entry (e.g., 'Role: Junior Coder'). **Note:** Modes `Intern Coder` and `Presenter` do not log lessons.
+- **Lesson Logging Rule:** If you successfully employ a novel technique, pattern, or workaround not present in the KB, *or* if prompted by your delegator, add a concise lesson learned entry to `src/mcp_doc_retriever/docs/lessons_learned.json`. Clearly state your role in the entry (e.g., 'Role: Junior Coder'). **Note:** Modes `Intern Coder` and `Presenter` do not log lessons. Custom mode instructions specify triggers for logging specific types of lessons (e.g., planning, orchestration, technical).
+
+# New Rule: Async Recursive Workflows Debugging
+- When building or debugging **async recursive workflows** (e.g., downloaders, crawlers):
+  - **Always add deep contextual logging** at every step of the recursion, including URL processing, network calls, and error handling.
+  - **Propagate error messages and tracebacks** explicitly from inner functions to the orchestration layer.
+  - **Never rely solely on inner function error handling**; the orchestration must capture and log all exceptions.
+  - If silent failures persist, **refactor the orchestration layer** to expose root causes before patching inner functions.
+  - This ensures failures are observable, diagnosable, and fixable.

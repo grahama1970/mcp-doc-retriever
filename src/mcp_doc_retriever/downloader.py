@@ -2,563 +2,470 @@
 Module: downloader.py
 
 Description:
-Asynchronous recursive downloader with security protections, robots.txt compliance, atomic file writes, and optional Playwright fallback for dynamic content.
+Orchestrates the asynchronous recursive download process. Manages the download queue,
+handles URL canonicalization, domain/depth limits, robots.txt checks (via robots.py),
+invokes fetchers (via fetchers.py), processes results, writes index records, and queues new links.
 
 Third-party packages:
 - httpx: https://www.python-httpx.org/
 - aiofiles: https://github.com/Tinche/aiofiles
-- Playwright: https://playwright.dev/python/
-- bleach: https://bleach.readthedocs.io/en/latest/
 
-Sample input:
-start_url = "https://docs.python.org/3/"
-depth = 0
-force = True
-download_id = "test_download"
-base_dir = "downloads_test"
+Internal Modules:
+- mcp_doc_retriever.utils: Helper functions (timeouts, semaphores, path/URL manipulation).
+- mcp_doc_retriever.models: Pydantic models (IndexRecord).
+- mcp_doc_retriever.robots: Robots.txt checking logic.
+- mcp_doc_retriever.fetchers: URL fetching implementations (requests, playwright).
+
+Sample input (programmatic call):
+await start_recursive_download(
+    start_url="https://docs.python.org/3/",
+    depth=1,
+    force=False,
+    download_id="my_python_docs_download",
+    base_dir="/app/downloads",
+    use_playwright=False,
+    max_file_size=10485760 # 10MB limit
+)
 
 Expected output:
-- Downloads https://docs.python.org/3/ to downloads_test/content/docs.python.org/3/index.html
-- Creates an index file at downloads_test/index/test_download.jsonl with fetch status and metadata
-- Handles robots.txt, paywalls, and dynamic content fallback
-
+- Coordinates the download of content starting from the URL.
+- Creates an index file at /app/downloads/index/<download_id>.jsonl detailing fetch attempts.
 """
 
 import os
-import argparse
-import sys
 import json
 import asyncio
-import hashlib
 import re
-import time
 import httpx
 import aiofiles
-import fcntl
-import bleach
-import tempfile
-import urllib.parse
-import logging # Added import
+from urllib.parse import urlparse, urljoin
+import logging
+import traceback
 
-# Configure basic logging
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+# Configure logging (obtained from the application's central config)
+logger = logging.getLogger(__name__)
 
+# Import constants and utilities
+from mcp_doc_retriever.utils import (
+    TIMEOUT_REQUESTS,
+    TIMEOUT_PLAYWRIGHT,
+    canonicalize_url,
+    url_to_local_path,
+)
 
-from mcp_doc_retriever.utils import TIMEOUT_REQUESTS, TIMEOUT_PLAYWRIGHT, playwright_semaphore, requests_semaphore
-from mcp_doc_retriever.playwright_fetcher import fetch_single_url_playwright
+# Import data models
+from mcp_doc_retriever.models import IndexRecord
 
+# Import specialized functions
+from mcp_doc_retriever.robots import _is_allowed_by_robots
+from mcp_doc_retriever.fetchers import (
+    fetch_single_url_requests,
+    fetch_single_url_playwright,
+)
 
-
-# Global concurrency and resource controls for Playwright
-active_browser_count = 0
-browser_count_lock = asyncio.Lock()
-
-# Global lock file path with user-specific name
-GLOBAL_LOCK_PATH = f'/tmp/mcp_downloader_{os.getuid()}.lock'
-
-async def acquire_global_lock():
-    """Acquire global download lock with retries"""
-    max_attempts = 3
-    for attempt in range(max_attempts):
-        lock_file = None
-        try:
-            lock_file = open(GLOBAL_LOCK_PATH, 'w')
-            fcntl.flock(lock_file, fcntl.LOCK_EX | fcntl.LOCK_NB)
-            return lock_file
-        except BlockingIOError:
-            if lock_file:
-                lock_file.close()
-            if attempt < max_attempts - 1:
-                await asyncio.sleep(0.1 * (attempt + 1))
-        except Exception:
-            if lock_file:
-                lock_file.close()
-            break
-    return None
-
-async def fetch_single_url_requests(url, target_local_path, force=False, max_size=None, allowed_base_dir=".", timeout=None):
-    """
-    Download a single URL to a local file asynchronously, with security protections.
-
-    Args:
-        url (str): The URL to fetch.
-        target_local_path (str): The local file path to save content.
-        force (bool): If True, overwrite existing file. Default is False.
-        max_size (int or None): Maximum allowed size in bytes. None means unlimited.
-        allowed_base_dir (str): Base directory within which all downloads must stay.
-
-    Returns:
-        dict: {
-            'status': 'success' | 'skipped' | 'failed' | 'failed_paywall' | 'failed_request',
-            'content_md5': str or None,
-            'detected_links': list of str,
-            'error_message': str or None
-        }
-
-    Security considerations:
-    - The target path is sanitized and must stay within allowed_base_dir.
-    - Downloads are written atomically via a temporary file, renamed on success.
-    - If max_size is set, downloads exceeding this size are aborted.
-    """
-    result = {
-        'status': None,
-        'content_md5': None,
-        'detected_links': [],
-        'error_message': None
-    }
-
-    async with requests_semaphore:
-        try:
-            # Create target directory if needed BEFORE atomic existence check
-            try:
-                os.makedirs(os.path.dirname(target_local_path), exist_ok=True)
-            except Exception as e:
-                result['status'] = 'failed'
-                result['error_message'] = f"Directory creation failed: {str(e)}"
-                return result
-
-            # Decode URL-encoded characters to prevent bypass (handle multiple encodings)
-            decoded_path = target_local_path
-            while '%' in decoded_path:
-                decoded_path = urllib.parse.unquote(decoded_path)
-            # Normalize Windows backslashes to forward slashes for cross-platform traversal protection
-            decoded_path = decoded_path.replace("\\", "/")
-            # Path sanitization
-            norm_base = os.path.abspath(allowed_base_dir)
-            norm_target = os.path.abspath(os.path.normpath(decoded_path))
-            if not norm_target.startswith(norm_base):
-                result['status'] = 'failed'
-                result['error_message'] = f"Target path outside allowed directory: target='{norm_target}' base='{norm_base}'"
-                return result
-
-            # Atomic existence check to prevent TOCTOU race
-            try:
-                flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
-                fd = os.open(norm_target, flags)
-                os.close(fd)
-                # File did not exist before, safe to proceed
-            except FileExistsError:
-                if not force:
-                    result['status'] = 'skipped'
-                    return result
-                # else: force=True, proceed to overwrite later
-            except Exception as e:
-                result['status'] = 'failed'
-                result['error_message'] = f"Atomic existence check failed: {str(e)}"
-                return result
-
-            async with httpx.AsyncClient(follow_redirects=True, timeout=timeout or TIMEOUT_REQUESTS) as client:
-                try:
-                    response = await client.get(url, follow_redirects=True)
-                    response.raise_for_status()
-        
-                    # Paywall/login detection removed - response.text loads entire content into memory.
-                    # This is memory-intensive and better handled by Playwright if needed.
-
-                    # Check Content-Length header if present
-                    content_length = response.headers.get("Content-Length")
-                    if content_length is not None:
-                        try:
-                            content_length = int(content_length)
-                            if max_size is not None and content_length > max_size:
-                                result['status'] = 'failed'
-                                result['error_message'] = f"File too large ({content_length} bytes > max_size {max_size})"
-                                return result
-                        except ValueError:
-                            # Ignore invalid header, fallback to streaming check
-                            content_length = None
-
-                    # Acquire global download lock
-                    lock_file = await acquire_global_lock()
-                    if not lock_file:
-                        result['status'] = 'failed'
-                        result['error_message'] = "Download locked by another process"
-                        return result
-                    
-                    try:
-                        # Create temp file
-                        target_dir = os.path.dirname(norm_target)
-                        fd, temp_path = tempfile.mkstemp(dir=target_dir)
-                        os.close(fd)
-
-                        total = 0
-                        md5 = hashlib.md5()
-                        async with aiofiles.open(temp_path, 'wb') as f:
-                            async for chunk in response.aiter_bytes(chunk_size=8192):
-                                total += len(chunk)
-                                if max_size is not None and total > max_size:
-                                    await f.close()
-                                    os.remove(temp_path)
-                                    result['status'] = 'failed'
-                                    result['error_message'] = f"File exceeds max_size during download ({total} bytes)"
-                                    return result
-                                try:
-                                    md5.update(chunk)
-                                except Exception as e:
-                                    await f.close()
-                                    os.remove(temp_path)
-                                    result['status'] = 'failed'
-                                    result['error_message'] = f"MD5 calculation failed during download: {str(e)}"
-                                    return result
-                                await f.write(chunk)
-                        
-                        # Atomic rename
-                        try:
-                            # Before rename, check again for TOCTOU protection
-                            if not force and os.path.exists(norm_target):
-                                # Someone created file during download, skip overwrite
-                                os.remove(temp_path)
-                                result['status'] = 'skipped'
-                                return result
-
-                            os.replace(temp_path, norm_target)
-                            result['content_md5'] = md5.hexdigest()
-                        except Exception as e:
-                            if os.path.exists(temp_path):
-                                os.remove(temp_path)
-                            result['status'] = 'failed'
-                            result['error_message'] = f"File finalize failed: {str(e)}"
-                            return result
-
-                    except Exception as e:
-                        # Cleanup on error
-                        if 'temp_path' in locals() and os.path.exists(temp_path):
-                            os.remove(temp_path)
-                        raise
-                    finally:
-                        # Release lock
-                        try:
-                            fcntl.flock(lock_file, fcntl.LOCK_UN)
-                            lock_file.close()
-                            os.remove(GLOBAL_LOCK_PATH)
-                        except:
-                            pass
-
-                except httpx.RequestError as e:
-                    result['status'] = 'failed_request'
-                    result['error_message'] = f"Request error: {str(e)}"
-                    return result
-                except httpx.HTTPStatusError as e:
-                    result['status'] = 'failed_request'
-                    result['error_message'] = f"HTTP error: {str(e)}"
-                    return result
-                except Exception as e:
-                    # Cleanup temp file on any error
-                    if 'temp_path' in locals() and os.path.exists(temp_path):
-                        os.remove(temp_path)
-                    result['status'] = 'failed'
-                    result['error_message'] = "Download error"  # Consistent with tests
-                    return result
-
-            # Basic link detection (href/src attributes)
-            try:
-                # Read back content for link detection
-                async with aiofiles.open(norm_target, 'rb') as f:
-                    content = await f.read()
-                text_content = content.decode('utf-8', errors='ignore')
-                links = re.findall(r'''(?:href|src)=["'](.*?)["']''', text_content, re.IGNORECASE)
-                result['detected_links'] = links
-            except Exception:
-                # Ignore link detection errors
-                result['detected_links'] = []
-
-            result['status'] = 'success'
-            return result
-
-        except Exception as e:
-            result['status'] = 'failed'
-            result['error_message'] = str(e)
-            return result
-async def _is_allowed_by_robots(url: str, client: httpx.AsyncClient, robots_cache: dict) -> bool:
-    """Check robots.txt rules for the given URL. Supports multiple user-agent blocks, Allow/Disallow rules, and longest match precedence."""
-    from urllib.parse import urlparse
-
-    parsed = urlparse(url)
-    base_url = f"{parsed.scheme}://{parsed.netloc}"
-    robots_url = f"{base_url}/robots.txt"
-
-    if base_url in robots_cache:
-        rules = robots_cache[base_url]
-    else:
-        rules = {}
-        current_agents = []
-        try:
-            resp = await client.get(robots_url, timeout=10)
-            if resp.status_code == 200:
-                lines = resp.text.splitlines()
-                for line in lines:
-                    line = line.strip()
-                    if not line or line.startswith('#'):
-                        continue
-                    if line.lower().startswith('user-agent:'):
-                        agent = line.split(':',1)[1].strip()
-                        current_agents = [agent]
-                        if agent not in rules:
-                            rules[agent] = []
-                    elif line.lower().startswith('disallow:'):
-                        path = line.split(':',1)[1].strip()
-                        for agent in current_agents:
-                            rules.setdefault(agent, []).append(('disallow', path))
-                    elif line.lower().startswith('allow:'):
-                        path = line.split(':',1)[1].strip()
-                        for agent in current_agents:
-                            rules.setdefault(agent, []).append(('allow', path))
-            robots_cache[base_url] = rules
-        except Exception:
-            robots_cache[base_url] = rules  # treat as allowed on error
-
-    # Determine applicable rules
-    # Prefer exact user-agent, fallback to '*'
-    agent_rules = []
-    if '*' in rules:
-        agent_rules = rules.get('*', [])
-    # TODO: support custom user-agent matching if needed
-
-    # Find longest matching rule
-    matched_rule = None
-    matched_length = -1
-    for rule_type, path in agent_rules:
-        if not path:
-            continue
-        if parsed.path.startswith(path):
-            if len(path) > matched_length:
-                matched_rule = (rule_type, path)
-                matched_length = len(path)
-
-    if matched_rule:
-        rule_type, _ = matched_rule
-        if rule_type == 'allow':
-            return True
-        elif rule_type == 'disallow':
-            return False
-
-    # Default allow
-    return True
 
 async def start_recursive_download(
     start_url: str,
     depth: int,
     force: bool,
     download_id: str,
-    base_dir: str = "/app/downloads",
+    base_dir: str = "/app/downloads",  # Sensible default for container environment
     use_playwright: bool = False,
     timeout_requests: int = TIMEOUT_REQUESTS,
-    timeout_playwright: int = TIMEOUT_PLAYWRIGHT
+    timeout_playwright: int = TIMEOUT_PLAYWRIGHT,
+    max_file_size: int | None = None,
 ) -> None:
-    import json
-    import os
-    import aiofiles
-    import asyncio
-    from urllib.parse import urlparse
+    """
+    Starts the asynchronous recursive download process.
 
-    from mcp_doc_retriever.utils import canonicalize_url, url_to_local_path
-    from mcp_doc_retriever.models import IndexRecord
+    Args:
+        start_url: The initial URL to begin downloading from.
+        depth: Maximum recursion depth (0 means only the start_url).
+        force: Whether to overwrite existing files.
+        download_id: A unique identifier for this download batch.
+        base_dir: The root directory for all downloads (content and index).
+        use_playwright: Whether to use Playwright (True) or httpx (False) by default.
+        timeout_requests: Timeout in seconds for httpx requests.
+        timeout_playwright: Timeout in seconds for Playwright operations.
+        max_file_size: Maximum size in bytes for individual downloaded files.
+    """
+    logger.debug(f"!!! Entering start_recursive_download for ID: {download_id}, URL: {start_url}") # ADDED FOR DEBUG
+    # Ensure base_dir is absolute for reliable path comparisons later
+    abs_base_dir = os.path.abspath(base_dir)
+    logger.info(f"Download starting. ID: {download_id}, Base Dir: {abs_base_dir}")
 
-    # Prepare index file path
-    index_dir = os.path.join(base_dir, "index")
-    os.makedirs(index_dir, exist_ok=True)
-    index_path = os.path.join(index_dir, f"{download_id}.jsonl")
+    # Prepare directories and index file path safely
+    index_dir = os.path.join(abs_base_dir, "index")
+    content_base_dir = os.path.join(abs_base_dir, "content")
+    try:
+        os.makedirs(index_dir, exist_ok=True)
+        os.makedirs(content_base_dir, exist_ok=True)
+        logger.debug(f"Ensured directories exist: {index_dir}, {content_base_dir}")
+    except OSError as e:
+        logger.critical(
+            f"Cannot create base directories ({index_dir}, {content_base_dir}): {e}. Aborting download."
+        )
+        # Consider raising an exception here or returning a status
+        return
+
+    # Sanitize download_id to prevent path traversal in index filename
+    # Allow letters, numbers, underscore, hyphen, dot
+    safe_download_id = re.sub(r"[^a-zA-Z0-9_\-\.]", "_", download_id)
+    if not safe_download_id:
+        safe_download_id = "default_download"
+        logger.warning(
+            f"Original download_id '{download_id}' was invalid or empty, using '{safe_download_id}'"
+        )
+    index_path = os.path.join(index_dir, f"{safe_download_id}.jsonl")
+    logger.info(f"Using index file: {index_path}")
 
     # Initialize queue and visited set
     queue = asyncio.Queue()
-    await queue.put((start_url, 0))
-    visited = set()
+    visited = set()  # Store canonical URLs
 
-    # Canonicalize start domain for domain restriction
-    start_canonical = canonicalize_url(start_url)
-    start_domain = urlparse(start_canonical).netloc
+    # Canonicalize start URL and domain
+    try:
+        start_canonical = canonicalize_url(start_url)
+        await queue.put((start_canonical, 0))  # Add canonical URL tuple (url, depth)
+        visited.add(start_canonical)  # Add start URL to visited immediately
+        start_domain = urlparse(start_canonical).netloc
+        if not start_domain:
+            raise ValueError("Could not extract domain from start URL")
+        logger.info(
+            f"Starting domain: {start_domain}, Canonical start URL: {start_canonical}, Depth: {depth}"
+        )
+    except Exception as e:
+        logger.critical(f"Invalid start URL '{start_url}': {e}. Aborting download.")
+        # Optionally write a failure record to index?
+        return
 
     robots_cache = {}
 
-    async with httpx.AsyncClient(follow_redirects=True, timeout=timeout_requests) as client:
+    # Use a single shared httpx client for the entire download process
+    # Configure reasonable timeouts
+    client_timeout = httpx.Timeout(timeout_requests, read=timeout_requests, connect=15)
+    # Define standard headers
+    headers = {
+        "User-Agent": "MCPBot/1.0 (compatible; httpx; +https://example.com/botinfo)"
+    }  # Example informative UA
+
+    async with httpx.AsyncClient(
+        follow_redirects=True, timeout=client_timeout, headers=headers
+    ) as client:
         while not queue.empty():
-            current_url, current_depth = await queue.get()
+            # Dequeue the next URL to process
+            current_canonical_url, current_depth = await queue.get()
+            logger.debug(
+                f"Processing URL: {current_canonical_url} at depth {current_depth}"
+            )
 
-            canonical_url = canonicalize_url(current_url)
-            if canonical_url in visited:
-                continue
-            visited.add(canonical_url)
-
-            # Domain restriction
-            parsed_url = urlparse(canonical_url)
-            # Strict domain check: only allow the exact starting domain
-            if parsed_url.netloc != start_domain:
-                continue
-
-            # Robots.txt check
-            allowed = await _is_allowed_by_robots(canonical_url, client, robots_cache)
-            if not allowed:
-                record = IndexRecord(
-                    original_url=current_url,
-                    canonical_url=canonical_url,
-                    local_path="",
-                    content_md5=None,
-                    fetch_status="failed_robotstxt",
-                    http_status=None,
-                    error_message="Blocked by robots.txt"
-                )
-                async with aiofiles.open(index_path, 'a') as f:
-                    await f.write(record.json() + "\n")
-                continue
-
-            # Map URL to local path
-            local_path = url_to_local_path(base_dir, canonical_url)
-
-            # Download
+            # --- Pre-download Checks ---
             try:
+                # Domain restriction check (using canonical URL)
+                parsed_url = urlparse(current_canonical_url)
+                # Allow subdomains? Example: if not (parsed_url.netloc == start_domain or parsed_url.netloc.endswith(f".{start_domain}")):
+                if parsed_url.netloc != start_domain:
+                    logger.debug(
+                        f"Skipping URL outside start domain {start_domain}: {current_canonical_url}"
+                    )
+                    queue.task_done()  # Mark task as done even if skipped
+                    continue
+
+                # Robots.txt check - Use the shared client
+                allowed = await _is_allowed_by_robots(
+                    current_canonical_url, client, robots_cache
+                )
+                if not allowed:
+                    logger.info(f"Blocked by robots.txt: {current_canonical_url}")
+                    record = IndexRecord(
+                        original_url=current_canonical_url,  # In this context, original_url IS the canonical one being checked
+                        canonical_url=current_canonical_url,
+                        local_path="",
+                        content_md5=None,
+                        fetch_status="failed_robotstxt",
+                        http_status=None,
+                        error_message="Blocked by robots.txt",
+                    )
+                    # Write index record for skipped due to robots.txt
+                    try:
+                        async with aiofiles.open(
+                            index_path, "a", encoding="utf-8"
+                        ) as f:
+                            await f.write(
+                                record.model_dump_json(exclude_none=True) + "\n"
+                            )
+                    except Exception as write_e:
+                        logger.error(
+                            f"Failed to write robots.txt index record for {current_canonical_url}: {write_e}"
+                        )
+                    queue.task_done()
+                    continue
+
+                # Map URL to local path *after* robots check and domain check pass
+                local_path = url_to_local_path(content_base_dir, current_canonical_url)
+                logger.debug(
+                    f"Mapped {current_canonical_url} to local path: {local_path}"
+                )
+
+            except Exception as pre_check_e:
+                logger.error(
+                    f"Error during pre-download checks for {current_canonical_url}: {pre_check_e}",
+                    exc_info=True,
+                )
+                # Optionally write a failure record here? Need to decide if it's 'failed_request'
+                queue.task_done()  # Mark task done even on pre-check error
+                continue  # Skip this URL
+
+            # --- Main Download Attempt ---
+            result = None
+            fetch_status = (
+                "failed_request"  # Default to failure unless explicitly successful
+            )
+            error_message = "Download did not complete successfully."  # Default error
+            content_md5 = None
+            http_status = None
+            detected_links = []
+            final_local_path = ""  # Store path only if successfully saved
+
+            try:
+                logger.info(
+                    f"Attempting download: {current_canonical_url} (Depth {current_depth}) -> {local_path}"
+                )
+                fetcher_kwargs = {
+                    "url": current_canonical_url,  # Pass canonical URL to fetchers
+                    "target_local_path": local_path,
+                    "force": force,
+                    "allowed_base_dir": content_base_dir,
+                }
+
+                # Choose the fetcher based on the flag
                 if use_playwright:
+                    logger.debug("Using Playwright fetcher")
                     result = await fetch_single_url_playwright(
-                        current_url,
-                        local_path,
-                        force=force,
-                        allowed_base_dir=base_dir,
-                        timeout=timeout_playwright
+                        **fetcher_kwargs, timeout=timeout_playwright
                     )
                 else:
+                    logger.debug("Using Requests (httpx) fetcher")
                     result = await fetch_single_url_requests(
-                        current_url,
-                        local_path,
-                        force=force,
-                        allowed_base_dir=base_dir,
-                        timeout=timeout_requests
+                        **fetcher_kwargs,
+                        timeout=timeout_requests,
+                        client=client,
+                        max_size=max_file_size,
                     )
-                    # Check for dynamic content fallback
-                    if result.get("status") == "success":
-                        try:
-                            async with aiofiles.open(local_path, 'rb') as f:
-                                content_bytes = await f.read()
-                            if len(content_bytes) < 1024 and (b"#root" in content_bytes or b"#app" in content_bytes):
-                                # Retry with Playwright
-                                pw_result = await fetch_single_url_playwright(
-                                    current_url,
-                                    local_path,
-                                    force=True,  # overwrite with Playwright content
-                                    allowed_base_dir=base_dir,
-                                    timeout=timeout_playwright
-                                )
-                                if pw_result.get("status") == "success":
-                                    result = pw_result  # override with Playwright result
-                        except Exception:
-                            pass
-            except Exception as e: # Outer exception handler
-                error_msg = str(e) # Capture error message
-                logging.error(f"Exception during fetch for {current_url}: {error_msg}", exc_info=True) # Log exception with traceback
-                record = IndexRecord(
-                    original_url=current_url,
-                    canonical_url=canonical_url,
-                    local_path=local_path,
-                    content_md5=None,
-                    fetch_status="failed_request", # Sets status
-                    http_status=None,
-                    error_message=error_msg # Use captured message
+
+                # --- Log the raw result from the fetcher ---
+                logger.info(f"Fetcher raw result for {current_canonical_url}: {result!r}") # Use !r for detailed repr
+
+                # --- Process the result dictionary ---
+                if result:
+                    status_from_result = result.get("status")
+                    error_message_from_result = result.get("error_message")
+                    content_md5 = result.get("content_md5")
+                    http_status = result.get("http_status")
+                    detected_links = result.get("detected_links", [])
+
+                    # Map fetcher status to IndexRecord status
+                    if status_from_result == "success":
+                        fetch_status = "success"
+                        final_local_path = local_path  # Store path on success
+                        error_message = None
+                    elif status_from_result == "skipped":
+                        fetch_status = "skipped"
+                        error_message = (
+                            error_message_from_result or "Skipped (exists or TOCTOU)"
+                        )
+                        logger.info(
+                            f"Skipped download for {current_canonical_url}: {error_message}"
+                        )
+                    elif (
+                        status_from_result == "failed_paywall"
+                    ):  # Handle specific failure types
+                        fetch_status = "failed_paywall"
+                        error_message = (
+                            error_message_from_result
+                            or "Failed due to potential paywall"
+                        )
+                    else:  # Consolidate other failures ('failed', 'failed_request')
+                        fetch_status = "failed_request"
+                        # Use error from result if available, otherwise keep default
+                        error_message = (
+                            error_message_from_result
+                            or f"Fetcher failed with status '{status_from_result}'."
+                        )
+
+                    # Truncate error message if it exists
+                    if error_message:
+                        error_message = str(error_message)[:2000]  # Limit length
+
+                else:
+                    # This case should ideally not happen if fetchers always return a dict
+                    logger.error(
+                        f"Fetcher returned None for {current_canonical_url}, treating as failed_request."
+                    )
+                    error_message = "Fetcher returned None result."
+                    fetch_status = "failed_request"
+
+            except (
+                Exception
+            ) as fetch_exception:  # Catch ALL exceptions during the fetcher call itself
+                tb = traceback.format_exc()
+                error_msg_str = f"Exception during fetcher execution: {str(fetch_exception)} | Traceback: {tb}"
+                logger.error(
+                    f"Exception caught processing {current_canonical_url}: {error_msg_str}"
                 )
-                logging.info(f"Writing failed index record (exception): {record.json()}") # Log record before writing
-                async with aiofiles.open(index_path, 'a') as f:
-                    await f.write(record.json() + "\n")
-                continue # Skips processing the result dict
-
-            status = result.get("status")
-            content_md5 = result.get("content_md5")
-            error_message = result.get("error_message")
-            detected_links = result.get("detected_links", [])
-
-            if status == "success":
-                fetch_status = "success"
-            elif status == "failed_paywall":
-                fetch_status = "failed_paywall"
-            elif status == "failed_robotstxt":
-                fetch_status = "failed_robotstxt"
-            else:
                 fetch_status = "failed_request"
+                error_message = error_msg_str[:2000]  # Truncate
 
-            record = IndexRecord(
-                original_url=current_url,
-                canonical_url=canonical_url,
-                local_path=local_path,
-                content_md5=content_md5,
-                fetch_status=fetch_status,
-                http_status=None,
-                error_message=error_message # Uses error message from result dict
-            )
-            logging.info(f"Writing index record (normal): {record.json()}") # Log record before writing
-            async with aiofiles.open(index_path, 'a') as f:
-                await f.write(record.json() + "\n")
+            # --- Create and Write Index Record ---
+            try:
+                record = IndexRecord(
+                    original_url=current_canonical_url,  # Store the canonical URL fetched
+                    canonical_url=current_canonical_url,
+                    local_path=final_local_path
+                    if fetch_status == "success"
+                    else "",  # Store path only on success
+                    content_md5=content_md5,
+                    fetch_status=fetch_status,
+                    http_status=http_status,
+                    error_message=error_message,
+                )
+                logger.info(f"Preparing to write index record object: {record!r}")
+                record_json = record.model_dump_json(exclude_none=True)
+                logger.info(f"Writing index record JSON: {record_json}")
+                logger.debug(f"Attempting to open index file for append: {index_path}") # Log before open
+                async with aiofiles.open(index_path, "a", encoding="utf-8") as f:
+                    await f.write(record_json + "\n")
+                    logger.debug(f"Successfully wrote index record for {current_canonical_url}") # Log after write
 
-            # Recurse if within depth and success
+            except Exception as write_e:
+                logger.critical(
+                    f"CRITICAL: Failed to create or write index record for {current_canonical_url}: {write_e}",
+                    exc_info=True,
+                )
+                logger.error(
+                    f"Failed Record Data Hint: status={fetch_status}, error='{error_message}'"
+                )
+
+            # --- Recurse if successful and within depth limit ---
             if fetch_status == "success" and current_depth < depth:
+                logger.debug(
+                    f"Successfully downloaded {current_canonical_url}. Found {len(detected_links)} potential links. Max depth {depth}, current {current_depth}."
+                )
+                if not detected_links:
+                    logger.info(
+                        f"No links detected or extracted from {current_canonical_url}"
+                    )
+
                 for link in detected_links:
+                    abs_link = None
                     try:
-                        abs_link = httpx.URL(link, base=current_url).human_repr()
+                        # Construct absolute URL relative to the *current* page's canonical URL
+                        abs_link = urljoin(current_canonical_url, link.strip())
+
+                        # Basic filter: only http/https
+                        parsed_abs_link = urlparse(abs_link)
+                        if parsed_abs_link.scheme not in ["http", "https"]:
+                            logger.debug(f"Skipping non-http(s) link: {abs_link}")
+                            continue
+
+                        # Canonicalize the potential next link
                         canon_link = canonicalize_url(abs_link)
                         canon_domain = urlparse(canon_link).netloc
-                        if canon_link not in visited and canon_domain.endswith(start_domain):
-                            await queue.put((abs_link, current_depth + 1))
-                    except Exception:
-                        continue
-def parse_args():
-    """Parse command-line arguments for the recursive downloader CLI."""
-    parser = argparse.ArgumentParser(description="Recursive Downloader CLI")
-    parser.add_argument(
-        "--url",
-        type=str,
-        default="http://example.com",
-        help="Starting URL to download (default: http://example.com)"
-    )
-    parser.add_argument(
-        "--depth",
-        type=int,
-        default=1,
-        help="Recursion depth (default: 1)"
-    )
-    parser.add_argument(
-        "--force",
-        action="store_true",
-        help="Force overwrite existing files"
-    )
-    parser.add_argument(
-        "--output-dir",
-        type=str,
-        default="downloads",
-        help="Output directory inside the base downloads folder (default: downloads). Must be within the base downloads directory."
-    )
-    return parser.parse_args()
 
+                        # Check domain and visited status BEFORE putting in queue
+                        if canon_domain == start_domain and canon_link not in visited:
+                            visited.add(
+                                canon_link
+                            )  # Add to visited *before* adding to queue
+                            logger.debug(
+                                f"Adding link to queue: {canon_link} (from {link} on {current_canonical_url})"
+                            )
+                            await queue.put((canon_link, current_depth + 1))
+                        # Optional: Log reasons for skipping links
+                        # elif canon_domain != start_domain:
+                        #     logger.debug(f"Skipping link to different domain: {canon_link}")
+                        # elif canon_link in visited:
+                        #     logger.debug(f"Skipping link already processed or in queue: {canon_link}")
 
-def main():
-    """CLI entry point for the recursive downloader."""
-    args = parse_args()
+                    except Exception as link_processing_exception:
+                        logger.warning(
+                            f"Failed to process or queue link '{link}' found in {current_canonical_url} (Absolute: {abs_link}): {link_processing_exception}",
+                            exc_info=True,
+                        )
+                        # Continue to the next link even if one fails
+            elif fetch_status == "success" and current_depth >= depth:
+                logger.info(
+                    f"Reached max depth {depth}, not recursing further from {current_canonical_url}"
+                )
 
-    BASE_DOWNLOAD_DIR = os.path.abspath("downloads")
-    resolved_output_dir = os.path.abspath(args.output_dir)
+            # Mark the current task from the queue as done
+            queue.task_done()
 
-    # Security check: prevent directory traversal outside base dir
-    if not os.path.commonpath([resolved_output_dir, BASE_DOWNLOAD_DIR]) == BASE_DOWNLOAD_DIR:
-        print(f"Error: Output directory '{resolved_output_dir}' is outside the allowed base directory '{BASE_DOWNLOAD_DIR}'. Aborting.")
-        sys.exit(1)
-
-    # Create the directory if it doesn't exist (safe because it's inside base)
-    os.makedirs(resolved_output_dir, exist_ok=True)
-    args.output_dir = resolved_output_dir
-
-    print("Starting download with parameters:")
-    print(f"  URL: {args.url}")
-    print(f"  Depth: {args.depth}")
-    print(f"  Force overwrite: {args.force}")
-    print(f"  Output directory: {args.output_dir}")
-    print("Beginning recursive download...")
-
-    asyncio.run(
-        start_recursive_download(
-            start_url=args.url,
-            depth=args.depth,
-            force=args.force,
-            download_id="cli_download",
-            base_dir=args.output_dir,
-            use_playwright=False
+        # Wait for all tasks in the queue to be processed (optional, good practice)
+        await queue.join()
+        logger.info(
+            f"Download queue processed. Download finished for ID: {download_id}"
         )
+
+
+def usage_example():
+    """Demonstrates programmatic usage of the downloader's start_recursive_download."""
+    # Define a temporary directory for the example
+    test_dir = "./downloader_usage_example_downloads"
+
+    # Basic logging setup for the example
+    log_level = logging.INFO
+    log_format = (
+        "%(asctime)s - %(levelname)s - [%(name)s:%(funcName)s:%(lineno)d] - %(message)s"
     )
-    print("Download completed.")
+    date_format = "%Y-%m-%d %H:%M:%S"
+    logging.basicConfig(level=log_level, format=log_format, datefmt=date_format)
+    logging.getLogger("httpx").setLevel(logging.WARNING)  # Quiet verbose logs
+
+    async def run_example():
+        logger.info(f"Starting example download to {test_dir}...")
+        try:
+            await start_recursive_download(
+                start_url="https://example.com",  # Use a simple, allowed URL
+                depth=0,  # Only download the start URL for a quick example
+                force=True,  # Overwrite if run multiple times
+                download_id="downloader_example_run",
+                base_dir=test_dir,
+                use_playwright=False,  # Use the faster httpx fetcher
+                max_file_size=1024 * 1024,  # 1MB limit for example
+            )
+            logger.info("Example download function completed.")
+            # Verify output
+            index_file = os.path.join(test_dir, "index", "downloader_example_run.jsonl")
+            content_file = os.path.join(
+                test_dir, "content", "example.com", "index.html"
+            )
+            if os.path.exists(index_file):
+                logger.info(f"Index file found: {index_file}")
+            else:
+                logger.error(f"Index file NOT found: {index_file}")
+            if os.path.exists(content_file):
+                logger.info(f"Content file found: {content_file}")
+            else:
+                logger.error(f"Content file NOT found: {content_file}")
+
+        except Exception as e:
+            logger.error(
+                f"An error occurred during the usage example: {e}", exc_info=True
+            )
+        finally:
+            # Optional: Clean up the test directory afterwards
+            # import shutil
+            # if os.path.exists(test_dir):
+            #     logger.info(f"Cleaning up test directory: {test_dir}")
+            #     shutil.rmtree(test_dir)
+            pass
+
+    asyncio.run(run_example())
 
 
 if __name__ == "__main__":
-    main()
+    # This block executes when the script is run directly
+    # (e.g., python -m src.mcp_doc_retriever.downloader)
+    # It runs the usage example.
+    usage_example()

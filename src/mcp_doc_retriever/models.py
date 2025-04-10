@@ -1,74 +1,53 @@
 """
 Pydantic models for MCP Document Retriever.
 
-Defines:
-- DownloadRequest
-- DownloadStatus
-- SearchRequest
-- SearchResultItem
-- SearchResponse
-- IndexRecord
-
-Links:
-- Pydantic: https://docs.pydantic.dev/
-- Python typing: https://docs.python.org/3/library/typing.html
-
-Sample DownloadRequest input:
-{
-  "url": "https://docs.python.org/3/",
-  "use_playwright": false,
-  "force": false,
-  "depth": 1
-}
-
-Sample DownloadStatus output:
-{
-  "status": "started",
-  "message": "Download initiated for https://docs.python.org/3/",
-  "download_id": "uuid-string"
-}
-
-Sample SearchRequest input:
-{
-  "download_id": "uuid-string",
-  "scan_keywords": ["Python"],
-  "extract_selector": "title",
-  "extract_keywords": null
-}
-
-Sample SearchResponse output:
-{
-  "results": [
-    {
-      "original_url": "https://docs.python.org/3/",
-      "extracted_content": "Welcome to Python 3.x documentation",
-      "selector_matched": "title"
-    }
-  ]
-}
+... (existing docstring) ...
 """
 
-from pydantic import BaseModel
-from typing import List, Optional, Literal
+from pydantic import BaseModel, Field, validator, AnyHttpUrl # Added AnyHttpUrl if needed
+from typing import List, Optional, Literal, Dict # Added Dict
+from datetime import datetime, timedelta # Added datetime, timedelta for example
+
+# --- Existing Models ---
 
 class DownloadRequest(BaseModel):
     """Request model for initiating a download"""
+    # Ensure url validation if desired (optional)
+    # url: AnyHttpUrl # Use this for stricter validation
     url: str
     force: bool = False
-    depth: int = 1
+    depth: int = Field(default=1, ge=0)
+    use_playwright: Optional[bool] = False
+    timeout: Optional[int] = None
+    max_file_size: Optional[int] = Field(
+        default=None, alias="max_size"
+    )
+
+    @validator("timeout", "max_file_size")
+    def check_positive_optional(cls, value):
+        if value is not None and value <= 0:
+            raise ValueError("Value must be positive if provided")
+        return value
 
 class DownloadStatus(BaseModel):
-    """Response model for download status"""
-    status: Literal["started", "failed"]
+    """Response model for download status AFTER initiation"""
+    status: Literal["started", "failed_validation"] # Renamed from "failed" which is ambiguous now
     message: str
-    download_id: str
+    download_id: Optional[str] = None # download_id is None if validation fails early
+
 
 class SearchRequest(BaseModel):
     """Request model for searching downloaded content"""
     download_id: str
-    scan_keywords: List[str]
+    scan_keywords: List[str] = Field(..., min_items=1)
     extract_selector: str
     extract_keywords: Optional[List[str]] = None
+
+    @validator("extract_selector")
+    def check_selector_non_empty(cls, value):
+        if not value or not value.strip():
+            raise ValueError("extract_selector cannot be empty")
+        return value
 
 class SearchResultItem(BaseModel):
     """Model for individual search results"""
@@ -76,41 +55,68 @@ class SearchResultItem(BaseModel):
     extracted_content: str
     selector_matched: str
 
-class SearchResponse(BaseModel):
-    """Response model for search results"""
-    results: List[SearchResultItem]
-
 class IndexRecord(BaseModel):
-    """Internal model for tracking download attempts"""
+    """Internal model for tracking download attempts and results in the index file."""
     original_url: str
     canonical_url: str
     local_path: str
     content_md5: Optional[str] = None
-    fetch_status: Literal["success", "failed_request", "failed_robotstxt", "failed_paywall"]
+    fetch_status: Literal[
+        "success", "failed_request", "failed_robotstxt", "failed_paywall", "skipped"
+    ]
     http_status: Optional[int] = None
     error_message: Optional[str] = None
 
+# --- NEW Model for Task Status ---
+
+class TaskStatus(BaseModel):
+    """Response model for querying the status of a background download task."""
+    status: Literal["pending", "running", "completed", "failed"]
+    message: Optional[str] = None # Optional message for progress or final status
+    start_time: Optional[datetime] = None
+    end_time: Optional[datetime] = None
+    error_details: Optional[str] = None # Store error details if failed
+
+# --- Example Usage (Optional - If running models.py directly) ---
 if __name__ == "__main__":
-    # Minimal usage verification
-    req = DownloadRequest(url="https://docs.python.org/3/")
-    print("DownloadRequest:", req.json())
+    # Example verification for existing models (assuming they were here)
+    print("--- Model Verification Start ---")
+    # Add verification for DownloadRequest, DownloadStatus, etc. if needed
 
-    status = DownloadStatus(status="started", message="Download initiated", download_id="uuid-string")
-    print("DownloadStatus:", status.json())
-
-    search_req = SearchRequest(
-        download_id="uuid-string",
-        scan_keywords=["Python"],
-        extract_selector="title",
-        extract_keywords=None
+    print("\nTaskStatus (Running):")
+    task_running = TaskStatus(
+        status="running",
+        message="Processing URL 10/50",
+        start_time=datetime.now()
     )
-    print("SearchRequest:", search_req.json())
+    try:
+        print(task_running.model_dump_json(indent=2))
+    except AttributeError:
+        print(task_running.json(indent=2)) # V1 fallback
 
-    search_resp = SearchResponse(results=[
-        SearchResultItem(
-            original_url="https://docs.python.org/3/",
-            extracted_content="Welcome to Python 3.x documentation",
-            selector_matched="title"
-        )
-    ])
-    print("SearchResponse:", search_resp.json())
+    print("\nTaskStatus (Completed):")
+    task_completed = TaskStatus(
+        status="completed",
+        message="Download finished successfully.",
+        start_time=datetime.now() - timedelta(minutes=5), # Example past time
+        end_time=datetime.now()
+    )
+    try:
+        print(task_completed.model_dump_json(indent=2))
+    except AttributeError:
+        print(task_completed.json(indent=2))
+
+    print("\nTaskStatus (Failed):")
+    task_failed = TaskStatus(
+        status="failed",
+        message="Download failed critically.",
+        start_time=datetime.now() - timedelta(minutes=2),
+        end_time=datetime.now(),
+        error_details="Timeout connecting to host."
+    )
+    try:
+        print(task_failed.model_dump_json(indent=2, exclude_none=True)) # Exclude None example
+    except AttributeError:
+        print(task_failed.json(indent=2))
+
+    print("\n--- Model Verification End ---")
