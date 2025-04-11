@@ -3,6 +3,9 @@ FROM mcr.microsoft.com/playwright/python:v1.51.0-noble
 
 WORKDIR /app
 
+# Install jq FIRST
+RUN apt-get update && apt-get install -y --no-install-recommends jq && rm -rf /var/lib/apt/lists/*
+
 # Copy dependency files first for caching
 COPY pyproject.toml uv.lock* ./
 
@@ -24,5 +27,5 @@ COPY . .
 EXPOSE 8000
 VOLUME ["/app/downloads"]
 
-# Run FastAPI app using uv run per .roorules
-CMD ["uv", "run", "-m", "uvicorn", "src.mcp_doc_retriever.main:app", "--host", "0.0.0.0", "--port", "8000"]
+# Run FastAPI app using direct python -m per lessons learned
+CMD ["python", "-m", "uvicorn", "src.mcp_doc_retriever.main:app", "--host", "0.0.0.0", "--port", "8000"]

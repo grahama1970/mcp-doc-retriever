@@ -114,6 +114,17 @@ except TypeError as e:
 
 
 # --- Add other config variables here following the same pattern ---
+
+# SSRF test override: allow internal URLs for test hosts (e.g., host.docker.internal)
+_ALLOW_TEST_INTERNAL_URLS_ENV = os.environ.get("MCP_ALLOW_TEST_INTERNAL_URLS")
+_ALLOW_TEST_INTERNAL_URLS_FILE = _config_data.get("ALLOW_TEST_INTERNAL_URLS")
+if _ALLOW_TEST_INTERNAL_URLS_ENV is not None:
+    ALLOW_TEST_INTERNAL_URLS = _ALLOW_TEST_INTERNAL_URLS_ENV.lower() in ("1", "true", "yes")
+elif _ALLOW_TEST_INTERNAL_URLS_FILE is not None:
+    ALLOW_TEST_INTERNAL_URLS = bool(_ALLOW_TEST_INTERNAL_URLS_FILE)
+else:
+    ALLOW_TEST_INTERNAL_URLS = False  # Default: do not allow in production
+
 # Example: TIMEOUT_REQUESTS (assuming it's defined in utils, but config could override)
 try:
     from .utils import TIMEOUT_REQUESTS as _DEFAULT_TIMEOUT_REQUESTS

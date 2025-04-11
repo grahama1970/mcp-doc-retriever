@@ -136,8 +136,8 @@ cython_debug/
 
 # Download directories (specific to this project)
 downloads/
-downloads_test/
-downloader_usage_example_downloads/
-
+tests/outputs/
+examples/
+tests/fixtures/
 # Task file
 task.md

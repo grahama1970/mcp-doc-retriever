@@ -15,7 +15,7 @@ Third-party packages:
 
 Sample input (fetch_single_url_requests):
 url = "https://example.com"
-target_local_path = "./downloads_test/requests_test.html"
+target_local_path = "./tests/outputs/requests_test.html"
 result = await fetch_single_url_requests(url, target_local_path, force=True)
 
 Sample output (fetch_single_url_requests):
@@ -29,7 +29,7 @@ Sample output (fetch_single_url_requests):
 
 Sample input (fetch_single_url_playwright):
 url = "https://docs.python.org/3/"
-target_local_path = "./downloads_test/playwright_test.html"
+target_local_path = "./tests/outputs/playwright_test.html"
 result = await fetch_single_url_playwright(url, target_local_path, force=True)
 
 Sample output (fetch_single_url_playwright):
@@ -61,7 +61,14 @@ from mcp_doc_retriever.utils import (
     TIMEOUT_REQUESTS,
     TIMEOUT_PLAYWRIGHT,
     playwright_semaphore,
+    extract_code_blocks_from_html,
+    extract_code_blocks_from_markdown,
+    extract_json_from_code_block,
+    extract_content_blocks_from_html,
+    extract_content_blocks_from_markdown,
+    detect_arangosearch_json_example,
 )
+from mcp_doc_retriever.models import ContentBlock
 
 logger = logging.getLogger(__name__)
 
@@ -189,6 +196,7 @@ async def fetch_single_url_requests(
         "detected_links": [],
         "error_message": None,
         "http_status": None,
+        "code_snippets": [],
     }
     temp_path = None  # Ensure defined for potential cleanup
     norm_target = None
@@ -429,6 +437,56 @@ async def fetch_single_url_requests(
                         exc_info=True,
                     )
                     result["detected_links"] = []
+            # --- Code Block Extraction (HTML/Markdown) ---
+            if result["status"] == "success":
+                try:
+                    # Read the full file (limit to 2MB for safety)
+                    read_limit = 2 * 1024 * 1024
+                    async with aiofiles.open(norm_target, "r", encoding="utf-8", errors="ignore") as f:
+                        content_sample = await f.read(read_limit)
+                    # --- Old extraction for backward compatibility ---
+                    html_blocks = extract_code_blocks_from_html(content_sample, source_url=url)
+                    md_blocks = extract_code_blocks_from_markdown(content_sample, source_url=url)
+                    all_blocks = html_blocks + md_blocks
+                    for block in all_blocks:
+                        if block.get("language", "") and "json" in str(block["language"]).lower():
+                            parsed = extract_json_from_code_block(block["code"])
+                            if parsed is not None:
+                                block["parsed_json"] = parsed
+                    result["code_snippets"] = all_blocks
+
+                    # --- New enhanced extraction ---
+                    html_content_blocks = extract_content_blocks_from_html(content_sample, source_url=url)
+                    md_content_blocks = extract_content_blocks_from_markdown(content_sample, source_url=url)
+                    all_content_blocks = html_content_blocks + md_content_blocks
+                    result["content_blocks"] = [cb.model_dump() if hasattr(cb, "model_dump") else cb.dict() for cb in all_content_blocks]
+
+                    # For backward compatibility, also populate code_snippets with code/json blocks only
+                    legacy_code_snippets = []
+                    for cb in all_content_blocks:
+                        if cb.type in ("code", "json"):
+                            snippet = {
+                                "code": cb.content,
+                                "language": cb.language,
+                                "block_type": cb.block_type,
+                                "source_url": cb.source_url,
+                            }
+                            if cb.type == "json" and cb.metadata and "parsed_json" in cb.metadata:
+                                snippet["parsed_json"] = cb.metadata["parsed_json"]
+                            legacy_code_snippets.append(snippet)
+                    result["code_snippets"] = legacy_code_snippets
+
+                    # --- Annotate ArangoSearch examples ---
+                    for snippet in result["code_snippets"]:
+                        is_arango, ex_type = detect_arangosearch_json_example(snippet)
+                        snippet["is_arangosearch_example"] = is_arango
+                        snippet["arangosearch_example_type"] = ex_type
+
+
+                except Exception as code_e:
+                    logger.warning(f"Code block extraction failed for {norm_target}: {code_e}", exc_info=True)
+                    result["code_snippets"] = []
+                    result["content_blocks"] = []
 
     except Exception as outer_e:
         # Catch errors during setup (e.g., client creation, initial checks)
@@ -489,6 +547,7 @@ async def fetch_single_url_playwright(
         "detected_links": [],
         "error_message": None,
         "http_status": None,  # Added http_status field
+        "code_snippets": [],
     }
     temp_path = None
     norm_target = None
@@ -516,13 +575,14 @@ async def fetch_single_url_playwright(
             async with async_playwright() as p:
                 try:
                     # --- Launch Browser and Context ---
-                    browser = await p.chromium.launch(headless=True)
+                    browser = await p.chromium.launch(headless=False)  # Try headed mode for debugging
                     context = await browser.new_context(
                         java_script_enabled=True,
                         bypass_csp=True,
                         ignore_https_errors=True,
                         viewport={"width": 1280, "height": 800},
-                        user_agent="MCPBot/1.0 (compatible; Playwright)",
+                        # Use a realistic User-Agent to bypass anti-bot checks
+                        user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
                         locale="en-US",
                     )
                     # Block non-essential resources
@@ -545,40 +605,39 @@ async def fetch_single_url_playwright(
                         timeout=effective_timeout_ms
                     )
 
-                    # --- Capture HTTP Status ---
+                    # Debug: Log response headers and URL
                     if response:
+                        logger.debug(f"Playwright response URL: {response.url}")
+                        logger.debug(f"Playwright response headers: {response.headers}")
+                        logger.debug(f"Playwright response status: {response.status}")
                         result["http_status"] = response.status
-                        logger.debug(
-                            f"Playwright navigation response status: {response.status}"
-                        )
                         if (
                             not 200 <= response.status < 400
-                        ):  # Treat redirects (3xx) as potentially okay for getting content, but flag non-2xx/3xx as errors
-                            result["status"] = (
-                                "failed_request"  # Or map specific codes?
-                            )
+                        ):
+                            result["status"] = "failed_request"
                             result["error_message"] = (
                                 f"HTTP error {response.status} during navigation."
                             )
                             logger.warning(f"{result['error_message']} for {url}")
-                            # Don't necessarily raise here, let finally close, but prevent success status later
                     else:
                         logger.warning(
                             f"Playwright page.goto did not return a response object for {url}."
                         )
-                        result["status"] = (
-                            "failed_request"  # Treat as failure if no response
-                        )
+                        result["status"] = "failed_request"
                         result["error_message"] = (
                             "Playwright navigation yielded no response."
                         )
 
                     # Proceed only if navigation seemed okay (status might still be non-200, handled later)
                     if result["status"] != "failed_request":
-                        # Optional: Add waits if content loads dynamically after DOMContentLoaded
-                        # await page.wait_for_selector('#main-content', timeout=effective_timeout_ms/2)
-                        # await page.wait_for_load_state('networkidle', timeout=effective_timeout_ms/2)
-
+                        # Wait for main content to load (try a visible selector)
+                        try:
+                            await page.wait_for_selector("main", timeout=effective_timeout_ms)
+                            logger.debug("Playwright: main content selector found.")
+                        except Exception as wait_e:
+                            logger.warning(f"Playwright: main content selector not found: {wait_e}")
+                        # Wait a bit longer for JS to finish rendering
+                        await page.wait_for_timeout(2000)
                         # Optional: Remove scripts (consider if needed)
                         # await page.evaluate("() => { document.querySelectorAll('script').forEach(s => s.remove()); }")
 
@@ -586,6 +645,13 @@ async def fetch_single_url_playwright(
                         logger.debug(
                             f"Playwright successfully retrieved content frame for: {url}"
                         )
+                        # Log the first 500 characters of the page content for debugging
+                        logger.info(f"Playwright page content (first 500 chars): {content[:500]}")
+                        # Log any JS console errors
+                        async def log_console(msg):
+                            if msg.type == "error":
+                                logger.error(f"Playwright JS error: {msg.text}")
+                        page.on("console", log_console)
 
                 # --- Playwright Specific Error Handling ---
                 except PlaywrightTimeoutError as e:
@@ -734,6 +800,51 @@ async def fetch_single_url_playwright(
                     logger.debug(
                         f"Detected {len(result['detected_links'])} unique candidate links via Playwright for {url}"
                     )
+                # --- Code Block Extraction (HTML/Markdown) ---
+                try:
+                    # Use the already-in-memory content string
+                    html_blocks = extract_code_blocks_from_html(content, source_url=url)
+                    md_blocks = extract_code_blocks_from_markdown(content, source_url=url)
+                    all_blocks = html_blocks + md_blocks
+                    for block in all_blocks:
+                        if block.get("language", "") and "json" in str(block["language"]).lower():
+                            parsed = extract_json_from_code_block(block["code"])
+                            if parsed is not None:
+                                block["parsed_json"] = parsed
+                    result["code_snippets"] = all_blocks
+
+                    # --- New enhanced extraction ---
+                    html_content_blocks = extract_content_blocks_from_html(content, source_url=url)
+                    md_content_blocks = extract_content_blocks_from_markdown(content, source_url=url)
+                    all_content_blocks = html_content_blocks + md_content_blocks
+                    result["content_blocks"] = [cb.model_dump() if hasattr(cb, "model_dump") else cb.dict() for cb in all_content_blocks]
+
+                    # For backward compatibility, also populate code_snippets with code/json blocks only
+                    legacy_code_snippets = []
+                    for cb in all_content_blocks:
+                        if cb.type in ("code", "json"):
+                            snippet = {
+                                "code": cb.content,
+                                "language": cb.language,
+                                "block_type": cb.block_type,
+                                "source_url": cb.source_url,
+                            }
+                            if cb.type == "json" and cb.metadata and "parsed_json" in cb.metadata:
+                                snippet["parsed_json"] = cb.metadata["parsed_json"]
+                            legacy_code_snippets.append(snippet)
+                    result["code_snippets"] = legacy_code_snippets
+
+                    # --- Annotate ArangoSearch examples ---
+                    for snippet in result["code_snippets"]:
+                        is_arango, ex_type = detect_arangosearch_json_example(snippet)
+                        snippet["is_arangosearch_example"] = is_arango
+                        snippet["arangosearch_example_type"] = ex_type
+
+
+                except Exception as code_e:
+                    logger.warning(f"Code block extraction failed for Playwright content {norm_target}: {code_e}", exc_info=True)
+                    result["code_snippets"] = []
+                    result["content_blocks"] = []
             elif (
                 result["status"] is None
             ):  # If no specific error occurred but content is None or status is still None
@@ -780,7 +891,7 @@ def usage_example():
     import asyncio
 
     # Ensure the test directory exists
-    test_base_dir = "./fetchers_usage_example"
+    test_base_dir = "./examples/fetchers"
     try:
         os.makedirs(test_base_dir, exist_ok=True)
     except OSError as e:

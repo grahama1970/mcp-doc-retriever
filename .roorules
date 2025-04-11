@@ -23,9 +23,19 @@
 
 # Standard Procedures (Consolidated from Modes)
 - **Error/Ambiguity Handling - Step 1:** When encountering errors or ambiguity, **always** consult relevant entries in `src/mcp_doc_retriever/docs/lessons_learned.json` first for known patterns or solutions, unless explicitly instructed otherwise by the mode definition.
-- **Error/Ambiguity Handling - Step 2 (Code Context):** For tasks involving code understanding, implementation, or refactoring, consult relevant documentation within `repo_docs/` after checking lessons learned.
++ **Error/Ambiguity Handling - Step 1 (Search Lessons Learned):** When encountering errors or ambiguity, **always search** relevant entries in `src/mcp_doc_retriever/docs/lessons_learned.json` first using `jq` via the `command` tool, unless explicitly instructed otherwise. Formulate a `jq` query to filter entries based on relevant keywords from the error message, task context, relevant files, or tools involved.
++   - **Example `jq` Query Strategy:**
++     - Identify 1-3 core keywords from the error/context (e.g., "docker", "permission", "build").
++     - Construct a query to check if *any* of these keywords are present (case-insensitive) in the `keywords`, `problem`, or `solution` fields.
++     - Example command format: `cat src/mcp_doc_retriever/docs/lessons_learned.json | jq --arg kw1 "keyword1" --arg kw2 "keyword2" '.[] | select(.keywords[]? | ascii_downcase | contains($kw1) or contains($kw2)) or (.problem? | ascii_downcase | contains($kw1) or contains($kw2)) or (.solution? | ascii_downcase | contains($kw1) or contains($kw2))'` (Adapt query based on keywords).
++     - Review the filtered JSON results returned by `jq`.
+- **Error/Ambiguity Handling - Step 2 (Code Context):** For tasks involving code understanding, implementation, or refactoring, consult relevant documentation after checking lessons learned. This includes:
++ **Error/Ambiguity Handling - Step 2 (Code Context):** If searching lessons learned yields no solution, consult relevant documentation for tasks involving code understanding, implementation, or refactoring. This includes:
+    a. **Downloaded Documentation:** Check content within the relevant download directory (typically under `/app/downloads/content/` inside the container) if documentation was retrieved using the `doc_download` tool. Use `read_file` or the `doc_search` tool as appropriate.
+    b. **Project Documentation:** Check any supplementary documentation stored within the project repository (e.g., in `repo_docs/`).
 - **Error/Ambiguity Handling - Step 3 (External Research):** If project documentation and lessons learned are insufficient, use `perplexity-ask` via `mcp` for external research (e.g., library issues, general patterns).
-*Note: Custom mode instructions specify the escalation path if these steps fail.*
++ **Error/Ambiguity Handling - Step 3 (External Research):** If project documentation and searching lessons learned are insufficient, use `perplexity-ask` via `mcp` for external research (e.g., library issues, general patterns).
+ *Note: Custom mode instructions specify the escalation path if these steps fail.*
 
 # **NEW: Self-Recovery Procedure: Revert Failed Edits**
 - **Self-Recovery Rule:** For all Code-editing roles (`Intern Coder`, `Junior Coder`, `Senior Coder`/`code`, `Refactorer`): If a file editing tool (`apply_diff`, `write_to_file`) results in a clearly failed state, OR if after making edits, subsequent checks (including the Mandatory Post-Edit Standalone Verification) reveal the file is broken and you **cannot fix it** after applying standard error handling procedures (KB, docs, reasonable fix attempts), you **MUST** proactively attempt to revert the specific file(s) to their last committed state before reporting failure. Execute `git checkout -- <filename>` (replacing `<filename>` with the actual file path) using the `command` tool for each affected file. Report that you performed this revert action when you subsequently report the failure or escalate.

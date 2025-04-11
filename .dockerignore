@@ -12,10 +12,10 @@ dist/
 .eggs/
 *.egg-info/
 
-# Ignore test data
-test_data/
-downloads_test/
-
+# Ignore test data and examples
+tests/outputs/
+examples/
+tests/fixtures/
 # Ignore git
 .git
 .gitignore

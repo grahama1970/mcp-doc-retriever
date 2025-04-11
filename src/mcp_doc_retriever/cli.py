@@ -13,7 +13,7 @@ Third-party packages:
 - asyncio: https://docs.python.org/3/library/asyncio.html
 
 Sample input:
-python -m src.mcp_doc_retriever.cli --url https://docs.python.org/3/ --depth 1 --output-dir ./downloads_test --download-id cli_test_run --force
+python -m src.mcp_doc_retriever.cli --url https://docs.python.org/3/ --depth 1 --output-dir ./tests/outputs --download-id cli_test_run --force
 
 Expected output:
 - Downloads content recursively from the URL.
@@ -158,7 +158,7 @@ def usage_example():
         "cli.py",
         "--url", "https://docs.python.org/3/",
         "--depth", "0",
-        "--output-dir", "./downloads_test",
+        "--output-dir", "./tests/outputs",
         "--download-id", "cli_test_run",
         "--force"
     ]

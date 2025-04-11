@@ -34,6 +34,7 @@ from urllib.parse import urlparse, urlunparse
 from fastapi import BackgroundTasks, FastAPI, HTTPException
 
 from . import config # Import config for base_dir
+from .utils import is_url_private_or_internal
 from .downloader import start_recursive_download
 from .models import ( # Import new TaskStatus
     DownloadRequest,
@@ -153,6 +154,14 @@ async def download(request: DownloadRequest, background_tasks: BackgroundTasks):
                 raise ValueError("Invalid URL format after attempting to add scheme.")
         # Canonicalize URL (ensure scheme, normalize path)
         canonical_url = urlunparse(parsed._replace(path=parsed.path or "/", query="", fragment=""))
+        # SSRF protection: block internal/private URLs
+        if is_url_private_or_internal(canonical_url):
+            logger.warning(f"Blocked SSRF-prone/internal URL: {canonical_url}")
+            return DownloadStatus(
+                status="failed_validation",
+                message="Blocked download: URL resolves to an internal/private address or forbidden hostname (potential SSRF).",
+                download_id=None
+            )
     except Exception as e:
         logger.warning(f"Invalid URL received: {request.url} - Error: {e}")
         # Return failure status directly without starting task

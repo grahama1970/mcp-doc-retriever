@@ -217,7 +217,7 @@ The application uses the following configuration sources, in order of precedence
     *   `MCP_DOWNLOAD_BASE_DIR`: Overrides the base directory for downloads (Default: `./downloads` relative to project root, resolved to absolute path `/app/downloads` in container).
     *   `MCP_TIMEOUT_REQUESTS`: Overrides default timeout for `httpx` requests (Default: 30 seconds).
     *   *(Add other environment variables corresponding to config options as needed)*
-2.  **`config.json` File:** A JSON file placed in the project root. Example:
+2.  **`config.json` File:** A JSON file placed in the project root. **Keys must be uppercase** (e.g., `DOWNLOAD_BASE_DIR`, `TIMEOUT_REQUESTS`) to override defaults. Example:
     ```json
     {
       "DOWNLOAD_BASE_DIR": "./custom_downloads_from_file",
@@ -225,6 +225,8 @@ The application uses the following configuration sources, in order of precedence
     }
     ```
 3.  **Default Values:** Defined within the `src/mcp_doc_retriever/config.py` and `src/mcp_doc_retriever/utils.py` modules.
+
+**Precedence:** Environment variables > `config.json` (uppercase keys) > module defaults.
 
 The final `DOWNLOAD_BASE_DIR` path is always resolved to an absolute path. Inside the Docker container, the relevant base path is `/app/downloads`, which is mapped to the persistent `download_data` volume.
 
@@ -266,6 +268,8 @@ volumes:
 - **ports:** Maps host port 8001 to container port 8000 (FastAPI server).
 
 This configuration ensures persistent storage, exposes the download and search tools, and sets environment variables compatible with the current container setup.
+
+**Note:** The service also exposes an SSE endpoint at `/` for MCP protocol connections, which can be used for real-time status updates or integration with agent frameworks.
 
 
 ## 🛠️ Setup & Installation
@@ -407,14 +411,81 @@ The service exposes the following endpoints, accessible by default at `http://lo
     ```json
     [
       {
-        "original_url": "https://docs.python.org/3/library/asyncio-task.html",
-        "extracted_content": "async def main():\n    print('hello')\n    await asyncio.sleep(1)\n    print('world')",
-        "selector_matched": "div.section > pre.highlight-python"
+        "original_url": "http://host.docker.internal:8000/mixed_content.md",
+        "extracted_content": "def hello_world():\n    print('Hello, world!')",
+        "selector_matched": "pre.language-python",
+        "content_block": {
+          "type": "code",
+          "content": "def hello_world():\n    print('Hello, world!')",
+          "language": "python",
+          "block_type": "markdown_fence",
+          "start_line": 5,
+          "end_line": 7,
+          "source_url": "http://host.docker.internal:8000/mixed_content.md",
+          "metadata": {
+            "selector": "pre.language-python"
+          }
+        },
+        "code_block_score": 0.98,
+        "json_match_info": null,
+        "search_context": "code"
+      },
+      {
+        "original_url": "http://host.docker.internal:8000/mixed_content.md",
+        "extracted_content": "{\"key\": \"value\", \"number\": 42}",
+        "selector_matched": "pre.language-json",
+        "content_block": {
+          "type": "json",
+          "content": "{\"key\": \"value\", \"number\": 42}",
+          "language": "json",
+          "block_type": "markdown_fence",
+          "start_line": 10,
+          "end_line": 12,
+          "source_url": "http://host.docker.internal:8000/mixed_content.md",
+          "metadata": {
+            "parsed_json": {
+              "key": "value",
+              "number": 42
+            }
+          }
+        },
+        "code_block_score": null,
+        "json_match_info": {
+          "matched_keys": ["key", "number"],
+          "matched_values": ["value", 42],
+          "path": ["root"]
+        },
+        "search_context": "json"
+      },
+      {
+        "original_url": "http://host.docker.internal:8000/mixed_content.md",
+        "extracted_content": "This is a paragraph about Python.",
+        "selector_matched": "p",
+        "content_block": {
+          "type": "text",
+          "content": "This is a paragraph about Python.",
+          "language": null,
+          "block_type": null,
+          "start_line": 15,
+          "end_line": 15,
+          "source_url": "http://host.docker.internal:8000/mixed_content.md",
+          "metadata": null
+        },
+        "code_block_score": null,
+        "json_match_info": null,
+        "search_context": "text"
       }
       // ... more results
     ]
     ```
 *   **Response Body (On Error):** HTTP 404 (if `download_id` index not found or task status isn't suitable), HTTP 5xx (internal search errors).
+
+**Field explanations:**
+- `content_block`: Rich metadata about the matched content block (type: `"code"`, `"json"`, or `"text"`), including language, block type, line numbers, and source URL.
+- `code_block_score`: Relevance score for code block matches (higher means more relevant).
+- `json_match_info`: Details about JSON matches, such as matched keys/values and their path.
+- `search_context`: Indicates the context of the match (`"code"`, `"json"`, or `"text"`).
+
 
 ### 4. Health Check
 

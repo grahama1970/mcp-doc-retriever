@@ -2,13 +2,18 @@
 Module: downloader.py
 
 Description:
-Orchestrates the asynchronous recursive download process. Manages the download queue,
-handles URL canonicalization, domain/depth limits, robots.txt checks (via robots.py),
-invokes fetchers (via fetchers.py), processes results, writes index records, and queues new links.
+Orchestrates robust documentation fetching for a given documentation URL:
+1. Checks (via Perplexity API) if the documentation is statically generated and available for direct download (e.g., on GitHub as Markdown).
+2. If a static site exists, downloads all Markdown source files using git sparse-checkout (prefer) or full clone, enforcing directory/file restrictions.
+3. If no static site is available, falls back to downloading all documentation pages using Playwright/browser automation or httpx.
+4. Adds deep contextual logging, error propagation, and security best practices per lessons_learned.json.
 
 Third-party packages:
 - httpx: https://www.python-httpx.org/
 - aiofiles: https://github.com/Tinche/aiofiles
+- Playwright: https://playwright.dev/python/
+- git: https://git-scm.com/
+- Perplexity API (via MCP): https://www.perplexity.ai/
 
 Internal Modules:
 - mcp_doc_retriever.utils: Helper functions (timeouts, semaphores, path/URL manipulation).
@@ -17,20 +22,271 @@ Internal Modules:
 - mcp_doc_retriever.fetchers: URL fetching implementations (requests, playwright).
 
 Sample input (programmatic call):
-await start_recursive_download(
-    start_url="https://docs.python.org/3/",
-    depth=1,
-    force=False,
-    download_id="my_python_docs_download",
-    base_dir="/app/downloads",
+await fetch_documentation_workflow(
+    docs_url="https://docs.arangodb.com/stable/",
+    download_id="arangodb_docs",
+    base_dir="./downloads",
+    depth=2,
+    force=True,
     use_playwright=False,
-    max_file_size=10485760 # 10MB limit
+    max_file_size=10485760
 )
 
 Expected output:
-- Coordinates the download of content starting from the URL.
-- Creates an index file at /app/downloads/index/<download_id>.jsonl detailing fetch attempts.
+- If static docs are detected, Markdown sources are downloaded to ./downloads/content/arangodb_docs/site/content/
+- If not, all documentation pages are recursively downloaded and indexed under ./downloads/content/ and ./downloads/index/
+- After download, all nested JSON examples are extracted from Markdown/HTML and indexed in ./downloads/index/arangodb_docs_examples.jsonl (or similar).
+- All actions are logged and errors are propagated to the orchestration layer.
 """
+import subprocess
+from typing import Optional
+
+async def detect_site_type(
+    docs_url: str,
+    timeout: int = 10,
+    logger_override=None,
+) -> str:
+    """
+    Detects if a documentation site is static (direct HTML/Markdown, minimal JS) or JS-driven.
+    Returns: "static", "js-driven", or "unknown"
+    """
+    _logger = logger_override or logger
+    import httpx
+    import re
+
+    _logger.info(f"[SiteTypeDetection] Fetching {docs_url} to analyze site type...")
+    try:
+        headers = {
+            "User-Agent": "MCPBot/1.0 (site-type-detector)"
+        }
+        with httpx.Client(timeout=timeout, headers=headers, follow_redirects=True) as client:
+            resp = client.get(docs_url)
+            content = resp.text
+            _logger.debug(f"[SiteTypeDetection] HTTP status: {resp.status_code}, Content length: {len(content)}")
+            # Heuristics for static site:
+            # - Main content present (look for <main>, <article>, or lots of <p>)
+            # - Few <script> tags, or scripts are analytics only
+            # - No "Please enable JavaScript" or "Loading..." placeholders
+            # - No large inline JS blocks
+            script_count = len(re.findall(r"<script\b", content, re.I))
+            main_count = len(re.findall(r"<main\b", content, re.I))
+            article_count = len(re.findall(r"<article\b", content, re.I))
+            p_count = len(re.findall(r"<p\b", content, re.I))
+            noscript = re.search(r"<noscript>.*?</noscript>", content, re.I | re.S)
+            js_warning = re.search(r"enable javascript|please enable javascript|requires javascript", content, re.I)
+            loading = re.search(r"loading\.\.\.|please wait", content, re.I)
+            # If main content is present and script count is low, likely static
+            if (main_count > 0 or article_count > 0 or p_count > 10) and script_count < 5 and not js_warning and not loading:
+                _logger.info(f"[SiteTypeDetection] Site appears STATIC (main content present, minimal JS).")
+                return "static"
+            # If lots of scripts, JS warnings, or loading placeholders, likely JS-driven
+            if script_count > 10 or js_warning or loading or (main_count == 0 and article_count == 0 and p_count < 5):
+                _logger.info(f"[SiteTypeDetection] Site appears JS-DRIVEN (many scripts, JS warnings, or missing main content).")
+                return "js-driven"
+            # If <noscript> present with warning, likely JS-driven
+            if noscript and ("javascript" in noscript.group(0).lower()):
+                _logger.info(f"[SiteTypeDetection] Site appears JS-DRIVEN (noscript warning detected).")
+                return "js-driven"
+            _logger.info(f"[SiteTypeDetection] Site type UNKNOWN (heuristics inconclusive).")
+            return "unknown"
+    except Exception as e:
+        _logger.error(f"[SiteTypeDetection] Error fetching/analyzing {docs_url}: {e}", exc_info=True)
+        return "unknown"
+
+async def fetch_documentation_workflow(
+    docs_url: str,
+    download_id: str,
+    base_dir: str = "./downloads",
+    depth: int = 3,
+    force: bool = False,
+    use_playwright: bool = False,
+    max_file_size: Optional[int] = 10 * 1024 * 1024,
+    timeout_requests: Optional[int] = None,
+    timeout_playwright: Optional[int] = None,
+    logger_override=None,
+) -> None:
+    """
+    Orchestrates documentation fetching:
+    1. Detects if the site is static or JS-driven.
+    2. If static, downloads recursively.
+    3. If JS-driven, uses Perplexity to check for a static version elsewhere.
+    4. If static site found, downloads it; else, falls back to dynamic scraping.
+    Adds deep contextual logging and enforces directory/file restrictions.
+
+    Args:
+        docs_url: The documentation site URL.
+        download_id: Unique identifier for this download batch.
+        base_dir: Root directory for downloads.
+        depth: Max recursion depth for fallback crawling.
+        force: Overwrite existing files.
+        use_playwright: Use Playwright for fallback crawling.
+        max_file_size: Max file size for downloads.
+        timeout_requests: Timeout for httpx requests.
+        timeout_playwright: Timeout for Playwright.
+        logger_override: Optional logger to use.
+
+    Returns:
+        None
+    """
+    _logger = logger_override or logger
+
+    from mcp_doc_retriever.utils import TIMEOUT_REQUESTS, TIMEOUT_PLAYWRIGHT
+    if timeout_requests is None:
+        timeout_requests = TIMEOUT_REQUESTS
+    if timeout_playwright is None:
+        timeout_playwright = TIMEOUT_PLAYWRIGHT
+    _logger.info(f"Starting documentation fetch workflow for {docs_url} (ID: {download_id})")
+
+    # Step 1: Detect site type
+    site_type = await detect_site_type(docs_url, timeout=timeout_requests, logger_override=_logger)
+    _logger.info(f"[Workflow] Site type detected: {site_type}")
+
+    if site_type == "static":
+        _logger.info(f"[Workflow] Detected static site. Proceeding with recursive download (requests/Playwright).")
+        await start_recursive_download(
+            start_url=docs_url,
+            depth=depth,
+            force=force,
+            download_id=download_id,
+            base_dir=base_dir,
+            use_playwright=use_playwright,
+            max_file_size=max_file_size,
+            timeout_requests=timeout_requests,
+            timeout_playwright=timeout_playwright,
+        )
+        # After download, extract and index JSON examples from HTML/Markdown
+        try:
+            from mcp_doc_retriever.example_extractor import extract_and_index_examples
+            abs_base_dir = os.path.abspath(base_dir)
+            content_dir = os.path.join(abs_base_dir, "content", download_id)
+            if not os.path.exists(content_dir):
+                content_dir = os.path.join(abs_base_dir, "content")
+            example_index_path = os.path.join(abs_base_dir, "index", f"{download_id}_examples.jsonl")
+            n_examples = extract_and_index_examples(
+                content_dir, example_index_path, file_types=[".md", ".markdown", ".html", ".htm"]
+            )
+            _logger.info(f"Extracted and indexed {n_examples} JSON examples from content to {example_index_path}")
+        except Exception as ex:
+            _logger.error(f"Example extraction/indexing failed: {ex}", exc_info=True)
+        return
+
+    # If JS-driven or unknown, try Perplexity to find a static version elsewhere
+    _logger.info(f"[Workflow] Site appears JS-driven or unknown. Querying Perplexity for alternate static documentation source.")
+    from mcp_sdk import use_mcp_tool  # type: ignore
+    try:
+        import asyncio
+        import json as _json
+        perplexity_args = {
+            "messages": [
+                {
+                    "role": "system",
+                    "content": (
+                        "You are a documentation analysis assistant. Given a documentation website URL, "
+                        "determine if the documentation is statically generated and available for direct download "
+                        "(such as on GitHub, in Markdown or similar source format). If so, provide the direct repository URL "
+                        "and the path to the documentation sources. If not, state that only browser-based crawling is possible."
+                    ),
+                },
+                {
+                    "role": "user",
+                    "content": (
+                        f"Is the documentation at {docs_url} statically generated and available for direct download (e.g., on GitHub as Markdown)? "
+                        "If so, what is the repository URL and the path to the documentation sources?"
+                    ),
+                },
+            ]
+        }
+        from mcp_sdk import use_mcp_tool as mcp_use_tool
+        result = await mcp_use_tool(
+            server_name="perplexity-ask-fresh",
+            tool_name="perplexity_ask",
+            arguments=perplexity_args,
+        )
+        answer = result.get("result") or result.get("output") or result
+        _logger.info(f"[Workflow] Perplexity response: {answer}")
+        import re
+        repo_url = None
+        doc_path = None
+        if isinstance(answer, str):
+            repo_match = re.search(r"(https://github\.com/[^\s\)]+)", answer)
+            path_match = re.search(r"(site/content[^\s\)]*)", answer)
+            if repo_match:
+                repo_url = repo_match.group(1)
+            if path_match:
+                doc_path = path_match.group(1)
+        if repo_url and doc_path:
+            _logger.info(f"[Workflow] Static documentation source detected by Perplexity: {repo_url} (path: {doc_path})")
+            # Download Markdown sources using git sparse-checkout
+            import os
+            abs_base_dir = os.path.abspath(base_dir)
+            content_dir = os.path.join(abs_base_dir, "content", download_id)
+            os.makedirs(content_dir, exist_ok=True)
+            if not os.path.commonpath([content_dir, abs_base_dir]) == abs_base_dir:
+                raise RuntimeError("Resolved content_dir escapes allowed base_dir!")
+            try:
+                _logger.info(f"[Workflow] Cloning {repo_url} (sparse-checkout: {doc_path}) into {content_dir}")
+                subprocess.run(
+                    ["git", "init"], cwd=content_dir, check=True
+                )
+                subprocess.run(
+                    ["git", "remote", "add", "origin", repo_url], cwd=content_dir, check=True
+                )
+                subprocess.run(
+                    ["git", "config", "core.sparseCheckout", "true"], cwd=content_dir, check=True
+                )
+                sparse_path = doc_path.rstrip("/") + "/"
+                with open(os.path.join(content_dir, ".git", "info", "sparse-checkout"), "w") as f:
+                    f.write(f"{sparse_path}*\n")
+                subprocess.run(
+                    ["git", "pull", "origin", "main"], cwd=content_dir, check=True
+                )
+                _logger.info(f"[Workflow] Successfully performed sparse-checkout of {repo_url} ({sparse_path})")
+            except Exception as git_e:
+                _logger.error(f"[Workflow] Git sparse-checkout failed: {git_e}. Falling back to full clone.")
+                try:
+                    subprocess.run(
+                        ["git", "clone", repo_url, content_dir], check=True
+                    )
+                except Exception as clone_e:
+                    _logger.critical(f"[Workflow] Full git clone also failed: {clone_e}")
+                    raise
+            _logger.info(f"[Workflow] Documentation sources downloaded to {content_dir}")
+            try:
+                from mcp_doc_retriever.example_extractor import extract_and_index_examples
+                example_index_path = os.path.join(abs_base_dir, "index", f"{download_id}_examples.jsonl")
+                n_examples = extract_and_index_examples(content_dir, example_index_path, file_types=[".md", ".markdown"])
+                _logger.info(f"[Workflow] Extracted and indexed {n_examples} JSON examples from Markdown to {example_index_path}")
+            except Exception as ex:
+                _logger.error(f"[Workflow] Example extraction/indexing failed: {ex}", exc_info=True)
+            return
+        else:
+            _logger.info("[Workflow] No static documentation source detected by Perplexity. Falling back to dynamic scraping.")
+    except Exception as perplexity_e:
+        _logger.error(f"[Workflow] Perplexity/static doc detection failed: {perplexity_e}. Falling back to dynamic scraping.")
+
+    # Fallback to dynamic scraping (Playwright or requests)
+    await start_recursive_download(
+        start_url=docs_url,
+        depth=depth,
+        force=force,
+        download_id=download_id,
+        base_dir=base_dir,
+        use_playwright=use_playwright,
+        max_file_size=max_file_size,
+        timeout_requests=timeout_requests,
+        timeout_playwright=timeout_playwright,
+    )
+    try:
+        from mcp_doc_retriever.example_extractor import extract_and_index_examples
+        abs_base_dir = os.path.abspath(base_dir)
+        content_dir = os.path.join(abs_base_dir, "content", download_id)
+        if not os.path.exists(content_dir):
+            content_dir = os.path.join(abs_base_dir, "content")
+        example_index_path = os.path.join(abs_base_dir, "index", f"{download_id}_examples.jsonl")
+        n_examples = extract_and_index_examples(content_dir, example_index_path, file_types=[".html", ".htm"])
+        _logger.info(f"[Workflow] Extracted and indexed {n_examples} JSON examples from HTML to {example_index_path}")
+    except Exception as ex:
+        _logger.error(f"[Workflow] Example extraction/indexing failed: {ex}", exc_info=True)
 
 import os
 import json
@@ -52,6 +308,7 @@ from mcp_doc_retriever.utils import (
     canonicalize_url,
     url_to_local_path,
 )
+from mcp_doc_retriever.utils import is_url_private_or_internal
 
 # Import data models
 from mcp_doc_retriever.models import IndexRecord
@@ -161,24 +418,41 @@ async def start_recursive_download(
 
             # --- Pre-download Checks ---
             try:
+                # SSRF protection: block internal/private URLs early
+                if is_url_private_or_internal(current_canonical_url):
+                    logger.warning(f"Blocked potential SSRF/internal URL: {current_canonical_url}")
+                    record = IndexRecord(
+                        original_url=current_canonical_url,
+                        canonical_url=current_canonical_url,
+                        local_path="",
+                        content_md5=None,
+                        fetch_status="failed_ssrf",
+                        http_status=None,
+                        error_message="Blocked by SSRF protection (internal/private address)",
+                    )
+                    try:
+                        async with aiofiles.open(index_path, "a", encoding="utf-8") as f:
+                            await f.write(record.model_dump_json(exclude_none=True) + "\n")
+                    except Exception as write_e:
+                        logger.error(f"Failed to write SSRF block index record for {current_canonical_url}: {write_e}")
+                    queue.task_done()
+                    continue
+
                 # Domain restriction check (using canonical URL)
                 parsed_url = urlparse(current_canonical_url)
-                # Allow subdomains? Example: if not (parsed_url.netloc == start_domain or parsed_url.netloc.endswith(f".{start_domain}")):
                 if parsed_url.netloc != start_domain:
                     logger.debug(
                         f"Skipping URL outside start domain {start_domain}: {current_canonical_url}"
                     )
-                    queue.task_done()  # Mark task as done even if skipped
+                    queue.task_done()
                     continue
 
-                # Robots.txt check - Use the shared client
-                allowed = await _is_allowed_by_robots(
-                    current_canonical_url, client, robots_cache
-                )
+                # Robots.txt check
+                allowed = await _is_allowed_by_robots(current_canonical_url, client, robots_cache)
                 if not allowed:
                     logger.info(f"Blocked by robots.txt: {current_canonical_url}")
                     record = IndexRecord(
-                        original_url=current_canonical_url,  # In this context, original_url IS the canonical one being checked
+                        original_url=current_canonical_url,
                         canonical_url=current_canonical_url,
                         local_path="",
                         content_md5=None,
@@ -186,35 +460,25 @@ async def start_recursive_download(
                         http_status=None,
                         error_message="Blocked by robots.txt",
                     )
-                    # Write index record for skipped due to robots.txt
                     try:
-                        async with aiofiles.open(
-                            index_path, "a", encoding="utf-8"
-                        ) as f:
-                            await f.write(
-                                record.model_dump_json(exclude_none=True) + "\n"
-                            )
+                        async with aiofiles.open(index_path, "a", encoding="utf-8") as f:
+                            await f.write(record.model_dump_json(exclude_none=True) + "\n")
                     except Exception as write_e:
-                        logger.error(
-                            f"Failed to write robots.txt index record for {current_canonical_url}: {write_e}"
-                        )
+                        logger.error(f"Failed to write robots.txt index record for {current_canonical_url}: {write_e}")
                     queue.task_done()
                     continue
 
                 # Map URL to local path *after* robots check and domain check pass
                 local_path = url_to_local_path(content_base_dir, current_canonical_url)
-                logger.debug(
-                    f"Mapped {current_canonical_url} to local path: {local_path}"
-                )
+                logger.debug(f"Mapped {current_canonical_url} to local path: {local_path}")
 
             except Exception as pre_check_e:
                 logger.error(
                     f"Error during pre-download checks for {current_canonical_url}: {pre_check_e}",
                     exc_info=True,
                 )
-                # Optionally write a failure record here? Need to decide if it's 'failed_request'
-                queue.task_done()  # Mark task done even on pre-check error
-                continue  # Skip this URL
+                queue.task_done()
+                continue
 
             # --- Main Download Attempt ---
             result = None
@@ -328,6 +592,7 @@ async def start_recursive_download(
                     fetch_status=fetch_status,
                     http_status=http_status,
                     error_message=error_message,
+                    code_snippets=result.get("code_snippets"),
                 )
                 logger.info(f"Preparing to write index record object: {record!r}")
                 record_json = record.model_dump_json(exclude_none=True)
@@ -408,64 +673,94 @@ async def start_recursive_download(
         )
 
 
-def usage_example():
-    """Demonstrates programmatic usage of the downloader's start_recursive_download."""
-    # Define a temporary directory for the example
-    test_dir = "./downloader_usage_example_downloads"
+import sys
 
-    # Basic logging setup for the example
+def usage_example():
+    """
+    Real-world usage: Download a single page or all documentation pages recursively, with optional Playwright support.
+    Usage:
+        python -m src.mcp_doc_retriever.downloader [single|recursive] [requests|playwright]
+    """
+    # Default: recursive download, requests fetcher
+    mode = "recursive"
+    fetcher = "requests"
+    if len(sys.argv) > 1:
+        mode = sys.argv[1].lower()
+    if len(sys.argv) > 2:
+        fetcher = sys.argv[2].lower()
+
+    use_playwright = fetcher == "playwright"
+
+    # Set parameters based on mode
+    if mode == "single":
+        start_url = "https://docs.arangodb.com/stable/index-and-search/arangosearch/arangosearch-views-reference/"
+        depth = 0
+        download_id = "arangodb_single"
+        base_dir = "./downloads"
+        log_msg = f"Downloading single ArangoDB documentation page using {'Playwright' if use_playwright else 'requests'}."
+    else:
+        start_url = "https://docs.arangodb.com/stable/"
+        depth = 5
+        download_id = "arangodb_full"
+        base_dir = "./downloads"
+        log_msg = f"Recursively downloading all ArangoDB documentation pages using {'Playwright' if use_playwright else 'requests'}."
+
+    # Logging setup
     log_level = logging.INFO
     log_format = (
         "%(asctime)s - %(levelname)s - [%(name)s:%(funcName)s:%(lineno)d] - %(message)s"
     )
     date_format = "%Y-%m-%d %H:%M:%S"
     logging.basicConfig(level=log_level, format=log_format, datefmt=date_format)
-    logging.getLogger("httpx").setLevel(logging.WARNING)  # Quiet verbose logs
+    logging.getLogger("httpx").setLevel(logging.WARNING)
 
-    async def run_example():
-        logger.info(f"Starting example download to {test_dir}...")
+    async def run_real_world():
+        logger.info(log_msg)
         try:
             await start_recursive_download(
-                start_url="https://example.com",  # Use a simple, allowed URL
-                depth=0,  # Only download the start URL for a quick example
-                force=True,  # Overwrite if run multiple times
-                download_id="downloader_example_run",
-                base_dir=test_dir,
-                use_playwright=False,  # Use the faster httpx fetcher
-                max_file_size=1024 * 1024,  # 1MB limit for example
+                start_url=start_url,
+                depth=depth,
+                force=True,
+                download_id=download_id,
+                base_dir=base_dir,
+                use_playwright=use_playwright,
+                max_file_size=10 * 1024 * 1024,
             )
-            logger.info("Example download function completed.")
+            logger.info("Download completed.")
             # Verify output
-            index_file = os.path.join(test_dir, "index", "downloader_example_run.jsonl")
-            content_file = os.path.join(
-                test_dir, "content", "example.com", "index.html"
-            )
+            index_file = os.path.join(base_dir, "index", f"{download_id}.jsonl")
             if os.path.exists(index_file):
                 logger.info(f"Index file found: {index_file}")
             else:
                 logger.error(f"Index file NOT found: {index_file}")
-            if os.path.exists(content_file):
-                logger.info(f"Content file found: {content_file}")
-            else:
-                logger.error(f"Content file NOT found: {content_file}")
 
+            # After download, extract and index JSON examples
+            try:
+                from mcp_doc_retriever.example_extractor import extract_and_index_examples
+                content_dir = os.path.join(base_dir, "content", download_id)
+                if not os.path.exists(content_dir):
+                    content_dir = os.path.join(base_dir, "content")
+                example_index_path = os.path.join(base_dir, "index", f"{download_id}_examples.jsonl")
+                n_examples = extract_and_index_examples(
+                    content_dir,
+                    example_index_path,
+                    file_types=[".md", ".markdown", ".html", ".htm"]
+                )
+                logger.info(f"Extracted and indexed {n_examples} JSON examples to {example_index_path}")
+            except Exception as ex:
+                logger.error(f"Example extraction/indexing failed: {ex}", exc_info=True)
         except Exception as e:
             logger.error(
-                f"An error occurred during the usage example: {e}", exc_info=True
+                f"An error occurred during the download: {e}", exc_info=True
             )
         finally:
-            # Optional: Clean up the test directory afterwards
-            # import shutil
-            # if os.path.exists(test_dir):
-            #     logger.info(f"Cleaning up test directory: {test_dir}")
-            #     shutil.rmtree(test_dir)
             pass
 
-    asyncio.run(run_example())
+    asyncio.run(run_real_world())
+    # No stray calls; usage_example() is the correct entrypoint.
 
 
 if __name__ == "__main__":
     # This block executes when the script is run directly
-    # (e.g., python -m src.mcp_doc_retriever.downloader)
-    # It runs the usage example.
+    # Usage: python -m src.mcp_doc_retriever.downloader [single|recursive]
     usage_example()

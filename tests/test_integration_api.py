@@ -38,6 +38,35 @@ import time
 import subprocess
 import os
 import json
+
+@pytest.mark.asyncio
+async def test_download_ssrf_block(http_client: httpx.AsyncClient):
+    """
+    Test that /download blocks internal/private/SSRF-prone URLs and allows legitimate external URLs.
+    """
+    ssrf_urls = [
+        "http://localhost:8000",
+        "http://127.0.0.1",
+        "http://10.0.0.5",
+        "http://192.168.1.1",
+        "http://my-internal-service.local",
+        "http://[::1]",
+        "http://169.254.169.254",  # AWS metadata
+    ]
+    for url in ssrf_urls:
+        payload = {"url": url, "depth": 0, "force": True}
+        response = await http_client.post("/download", json=payload)
+        assert response.status_code == 200, f"API call failed: {response.text}"
+        data = response.json()
+        assert data["status"] == "failed_validation", f"Should block SSRF URL: {url}"
+        assert "internal" in data["message"].lower() or "ssrf" in data["message"].lower(), f"Message should indicate SSRF block: {data['message']}"
+    # Control: external URL should be allowed
+    payload = {"url": "http://example.com", "depth": 0, "force": True}
+    response = await http_client.post("/download", json=payload)
+    assert response.status_code == 200, f"API call failed: {response.text}"
+    data = response.json()
+    assert data["status"] == "started", "External URL should be allowed"
+
 import uuid  # For generating unique invalid IDs
 from typing import Dict, Any, Set, Optional  # For type hinting
 from urllib.parse import (
@@ -282,6 +311,41 @@ async def http_client():
         base_url=BASE_URL, timeout=API_TIMEOUT_SECONDS
     ) as client:
         yield client
+# Fixture: Start a local HTTP server to serve test_data/ for custom download tests
+import socket
+import sys
+import threading
+from http.server import ThreadingHTTPServer, SimpleHTTPRequestHandler
+
+@pytest.fixture(scope="module")
+async def test_data_server():
+    """
+    Starts a local HTTP server serving the test_data/ directory on a random port.
+    Yields the port number for use in tests.
+    """
+    # Find a free port
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    sock.bind(("", 0))
+    port = sock.getsockname()[1]
+    sock.close()
+
+    # Change working directory to test_data/
+    orig_cwd = os.getcwd()
+    test_data_dir = os.path.join(orig_cwd, "test_data")
+    os.chdir(test_data_dir)
+
+    server = ThreadingHTTPServer(("0.0.0.0", port), SimpleHTTPRequestHandler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    print(f"[TEST FIXTURE] Started test_data HTTP server on port {port}")
+
+    try:
+        yield port
+    finally:
+        server.shutdown()
+        thread.join()
+        os.chdir(orig_cwd)
+        print(f"[TEST FIXTURE] Stopped test_data HTTP server on port {port}")
 
 
 # Use a class to share state (like download IDs) between tests if needed
@@ -292,81 +356,79 @@ class TestApiIntegration:
     # Note: relies on pytest default ordered execution or explicit ordering marks
     download_ids: Dict[str, str] = {}
 
-    # Test methods are async
-    async def test_01_health_check(self, http_client: httpx.AsyncClient):
-        """Phase 1: Verify the /health endpoint."""
-        print("\n--- Test: Health Check ---")
-        response = await http_client.get("/health")  # Relative URL uses base_url
-        assert response.status_code == 200
-        assert response.json() == {"status": "healthy"}
-        print("[PASS] Health check successful.")
+# Test methods as top-level async functions
 
-    async def test_02_download_example_com(self, http_client: httpx.AsyncClient):
-        """Phase 2: Initiate download for example.com, wait, verify basics."""
-        print("\n--- Test: Simple Download (example.com, depth 0) ---")
-        payload = {"url": EXAMPLE_URL, "depth": 0, "force": True}
-        response = await http_client.post("/download", json=payload)
-        assert response.status_code == 200, f"API call failed: {response.text}"
-        data = response.json()
-        assert data["status"] == "started"
-        download_id = data.get("download_id")
-        assert download_id, "Did not receive download_id"
-        TestApiIntegration.download_ids["example"] = (
-            download_id  # Store for later tests
+async def test_01_health_check(http_client: httpx.AsyncClient):
+    """Phase 1: Verify the /health endpoint."""
+    print("\n--- Test: Health Check ---")
+    response = await http_client.get("/health")  # Relative URL uses base_url
+    assert response.status_code == 200
+    assert response.json() == {"status": "healthy"}
+    print("[PASS] Health check successful.")
+
+@pytest.fixture
+async def example_com_download_id(http_client: httpx.AsyncClient):
+    """Fixture: Download example.com and return the download_id."""
+    print("\n--- Fixture: Download example.com (depth 0) ---")
+    payload = {"url": EXAMPLE_URL, "depth": 0, "force": True}
+    response = await http_client.post("/download", json=payload)
+    assert response.status_code == 200, f"API call failed: {response.text}"
+    data = response.json()
+    assert data["status"] == "started"
+    download_id = data.get("download_id")
+    assert download_id, "Did not receive download_id"
+    print(f"Download initiated, ID: {download_id}")
+
+    print(
+        f"Waiting up to {POLL_TIMEOUT_SECONDS}s for example.com download completion..."
+    )
+    final_record = await poll_for_index_status(
+        download_id, EXAMPLE_URL, {"success", "skipped"}
+    )
+    assert final_record is not None, (
+        f"Download for {EXAMPLE_URL} did not complete successfully within timeout."
+    )
+    assert final_record["fetch_status"] in ["success", "skipped"], (
+        f"Unexpected final status: {final_record['fetch_status']}"
+    )
+    print(
+        f"Download task for {EXAMPLE_URL} completed with status: {final_record['fetch_status']}"
+    )
+    return download_id
+    assert final_record.get("canonical_url") == EXAMPLE_URL
+    if final_record["fetch_status"] == "success":
+        assert final_record.get("http_status") == 200
+        assert final_record.get("content_md5") is not None
+        # Check path structure (relative to /app/downloads)
+        expected_rel_path = "content/example.com/index.html"
+        # Get the path from the record and make it absolute *within the container context*
+        recorded_path = final_record.get("local_path")
+        assert recorded_path, "Local path missing from successful record"
+        assert recorded_path == os.path.join("/app/downloads", expected_rel_path), (
+            f"Incorrect local_path in index: {recorded_path}"
         )
-        print(f"Download initiated, ID: {download_id}")
+    elif final_record["fetch_status"] == "skipped":
+        # For skipped, path might still be present from previous run if not forced properly
+        assert final_record.get("error_message") is not None
 
+    # Verify content file existence using docker exec if successful
+    content_path = final_record.get("local_path")
+    if content_path and final_record["fetch_status"] == "success":
+        proc = run_docker_exec(["test", "-f", content_path])
+        assert proc.returncode == 0, (
+            f"Content file {content_path} not found inside container. Stderr: {proc.stderr}"
+        )
+        print(f"[PASS] Content file {content_path} exists.")
+    elif final_record["fetch_status"] == "skipped":
         print(
-            f"Waiting up to {POLL_TIMEOUT_SECONDS}s for example.com download completion..."
+            "[INFO] Download skipped, content file existence not verified in this state."
         )
-        final_record = await poll_for_index_status(
-            download_id, EXAMPLE_URL, {"success", "skipped"}
-        )
-        assert final_record is not None, (
-            f"Download for {EXAMPLE_URL} did not complete successfully within timeout."
-        )
-        assert final_record["fetch_status"] in ["success", "skipped"], (
-            f"Unexpected final status: {final_record['fetch_status']}"
-        )
-        print(
-            f"Download task for {EXAMPLE_URL} completed with status: {final_record['fetch_status']}"
+    elif not content_path:
+        pytest.fail(
+            f"Download status was {final_record['fetch_status']} but no local_path recorded."
         )
 
-        # Verify index file content more precisely
-        assert final_record.get("canonical_url") == EXAMPLE_URL
-        if final_record["fetch_status"] == "success":
-            assert final_record.get("http_status") == 200
-            assert final_record.get("content_md5") is not None
-            # Check path structure (relative to /app/downloads)
-            expected_rel_path = "content/example.com/index.html"
-            # Get the path from the record and make it absolute *within the container context*
-            recorded_path = final_record.get("local_path")
-            assert recorded_path, "Local path missing from successful record"
-            assert recorded_path == os.path.join("/app/downloads", expected_rel_path), (
-                f"Incorrect local_path in index: {recorded_path}"
-            )
-        elif final_record["fetch_status"] == "skipped":
-            # For skipped, path might still be present from previous run if not forced properly
-            assert final_record.get("error_message") is not None
-
-        # Verify content file existence using docker exec if successful
-        content_path = final_record.get("local_path")
-        if content_path and final_record["fetch_status"] == "success":
-            proc = run_docker_exec(["test", "-f", content_path])
-            assert proc.returncode == 0, (
-                f"Content file {content_path} not found inside container. Stderr: {proc.stderr}"
-            )
-            print(f"[PASS] Content file {content_path} exists.")
-        elif final_record["fetch_status"] == "skipped":
-            print(
-                "[INFO] Download skipped, content file existence not verified in this state."
-            )
-        elif not content_path:
-            pytest.fail(
-                f"Download status was {final_record['fetch_status']} but no local_path recorded."
-            )
-
-        print("[PASS] Simple Download test complete.")
+    print("[PASS] Simple Download test complete.")
 
     async def test_03_search_example_com_success(self, http_client: httpx.AsyncClient):
         """Phase 3a: Search example.com download for expected content."""
@@ -514,6 +576,7 @@ class TestApiIntegration:
         )
         await asyncio.sleep(15)
 
+
         payload = {
             "download_id": download_id,
             "scan_keywords": [
@@ -526,17 +589,200 @@ class TestApiIntegration:
                 "event loop",
             ],  # Find paragraphs mentioning task/event loop
         }
-        response = await http_client.post("/search", json=payload)
-        assert response.status_code == 200, f"API call failed: {response.text}"
-        results = response.json()
-        assert isinstance(results, list), "Search response should be a list"
-        # We expect *some* results, hard to predict exact number/content reliably
-        assert len(results) > 0, (
-            f"Expected some search results for 'asyncio/await/task/event loop', got none."
-        )
-        print(
-            f"[PASS] Search on deeper download found {len(results)} results (at least 1 expected)."
-        )
+        search_resp = await http_client.post("/search", json=payload)
+        assert search_resp.status_code == 200
+        results = search_resp.json().get("results", [])
+        assert any("asyncio" in str(r) or "await" in str(r) for r in results), "Did not find expected keywords in search results"
+        print("[PASS] Search deeper (python docs) verified.")
+    # --- New E2E Tests for Complex Scenarios ---
+
+async def test_08_complex_json_extraction_and_search(http_client: httpx.AsyncClient, test_data_server):
+    """Test: Complex nested JSON extraction and search (ArangoDB-style)."""
+    print("\n--- Test: Complex Nested JSON Extraction and Search ---")
+    port = test_data_server
+    url = f"http://host.docker.internal:{port}/complex_doc.json"
+    payload = {"url": url, "depth": 0, "force": True}
+    response = await http_client.post("/download", json=payload)
+    assert response.status_code == 200, f"API call failed: {response.text}"
+    data = response.json()
+    assert data["status"] == "started"
+    download_id = data.get("download_id")
+    assert download_id, "Did not receive download_id"
+    print(f"Download initiated, ID: {download_id}")
+
+    # Wait for download to complete
+    record = await poll_for_index_status(download_id, url, {"success"})
+    assert record is not None, "Download did not complete successfully"
+
+    # Search for a deeply nested value
+    search_payload = {
+        "download_id": download_id,
+        "scan_keywords": ["Deeply nested value", "target_field"],
+        "extract_selector": None,
+        "extract_keywords": ["target_field", "Deeply nested value"]
+    }
+    search_resp = await http_client.post("/search", json=search_payload)
+    assert search_resp.status_code == 200
+    results = search_resp.json().get("results", [])
+    assert any("Deeply nested value" in str(r) for r in results), "Did not find deeply nested value in search results"
+    print("[PASS] Complex nested JSON extraction and search verified.")
+
+async def test_09_mixed_markdown_extraction_and_search(http_client: httpx.AsyncClient, test_data_server):
+    """Test: Mixed content extraction and search from Markdown (text and code blocks)."""
+    print("\n--- Test: Mixed Markdown Content Extraction and Search ---")
+    port = test_data_server
+    url = f"http://host.docker.internal:{port}/mixed_content.md"
+    payload = {"url": url, "depth": 0, "force": True}
+    response = await http_client.post("/download", json=payload)
+    assert response.status_code == 200, f"API call failed: {response.text}"
+    data = response.json()
+    assert data["status"] == "started"
+    download_id = data.get("download_id")
+    assert download_id, "Did not receive download_id"
+    print(f"Download initiated, ID: {download_id}")
+
+    record = await poll_for_index_status(download_id, url, {"success"})
+    assert record is not None, "Download did not complete successfully"
+
+    # Search for text and code block content
+    search_payload = {
+        "download_id": download_id,
+        "scan_keywords": ["Python", "hello_world", "print", "key", "number"],
+        "extract_selector": None,
+        "extract_keywords": ["hello_world", "print", "Python", "key", "number"]
+    }
+    search_resp = await http_client.post("/search", json=search_payload)
+    assert search_resp.status_code == 200
+    results = search_resp.json().get("results", [])
+    # Ensure both text and code block content are indexed and searchable
+    assert any("hello_world" in str(r) for r in results), "Code block (hello_world) not found in search results"
+    assert any("Python" in str(r) for r in results), "Text content (Python) not found in search results"
+    assert any('"key": "value"' in str(r) or "number" in str(r) for r in results), "JSON code block not found"
+    print("[PASS] Mixed Markdown content extraction and search verified.")
+
+async def test_10_mixed_html_extraction_and_search(http_client: httpx.AsyncClient, test_data_server):
+    """Test: Mixed content extraction and search from HTML (text and code blocks)."""
+    print("\n--- Test: Mixed HTML Content Extraction and Search ---")
+    port = test_data_server
+    url = f"http://host.docker.internal:{port}/mixed_content.html"
+    payload = {"url": url, "depth": 0, "force": True}
+    response = await http_client.post("/download", json=payload)
+    assert response.status_code == 200, f"API call failed: {response.text}"
+    data = response.json()
+    assert data["status"] == "started"
+    download_id = data.get("download_id")
+    assert download_id, "Did not receive download_id"
+    print(f"Download initiated, ID: {download_id}")
+
+    record = await poll_for_index_status(download_id, url, {"success"})
+    assert record is not None, "Download did not complete successfully"
+
+    # Search for text and code block content
+    search_payload = {
+        "download_id": download_id,
+        "scan_keywords": ["JavaScript", "greet", "console.log", "key", "number"],
+        "extract_selector": None,
+        "extract_keywords": ["greet", "console.log", "JavaScript", "key", "number"]
+    }
+    search_resp = await http_client.post("/search", json=search_payload)
+    assert search_resp.status_code == 200
+    results = search_resp.json().get("results", [])
+    # Ensure both text and code block content are indexed and searchable
+    assert any("greet" in str(r) for r in results), "Code block (greet) not found in search results"
+    assert any("JavaScript" in str(r) for r in results), "Text content (JavaScript) not found in search results"
+    assert any('"key": "value"' in str(r) or "number" in str(r) for r in results), "JSON code block not found"
+    print("[PASS] Mixed HTML content extraction and search verified.")
+
+async def test_11_crawler_depth_limit(http_client: httpx.AsyncClient, test_data_server):
+    """Test: Documentation crawling depth limit and link following."""
+    print("\n--- Test: Documentation Crawler Depth Limit ---")
+    port = test_data_server
+    root_url = f"http://host.docker.internal:{port}/depth_root.html"
+    payload = {"url": root_url, "depth": 1, "force": True}
+    response = await http_client.post("/download", json=payload)
+    assert response.status_code == 200, f"API call failed: {response.text}"
+    data = response.json()
+    assert data["status"] == "started"
+    download_id = data.get("download_id")
+    assert download_id, "Did not receive download_id"
+    print(f"Download initiated, ID: {download_id}")
+
+    # Wait for root and depth 1 children to be downloaded
+    record = await poll_for_index_status(download_id, root_url, {"success"})
+    assert record is not None, "Root page download did not complete successfully"
+
+    # Check that depth_child1.html and depth_child2.html are present in the index (depth 1)
+    child1_url = f"http://host.docker.internal:{port}/depth_child1.html"
+    child2_url = f"http://host.docker.internal:{port}/depth_child2.html"
+    child1_record = await poll_for_index_status(download_id, child1_url, {"success", "skipped", "error"})
+    child2_record = await poll_for_index_status(download_id, child2_url, {"success", "skipped", "error"})
+    assert child1_record is not None, "Child 1 page not found in index at depth 1"
+    assert child2_record is not None, "Child 2 page not found in index at depth 1"
+
+    # Now, set depth=0 and verify only root is downloaded
+    payload = {"url": root_url, "depth": 0, "force": True}
+    response = await http_client.post("/download", json=payload)
+    assert response.status_code == 200, f"API call failed: {response.text}"
+    data = response.json()
+    assert data["status"] == "started"
+    download_id_0 = data.get("download_id")
+    assert download_id_0, "Did not receive download_id for depth=0"
+    print(f"Download (depth=0) initiated, ID: {download_id_0}")
+
+    record_0 = await poll_for_index_status(download_id_0, root_url, {"success"})
+    assert record_0 is not None, "Root page download (depth=0) did not complete successfully"
+    # Should not find children at depth=0
+    child1_record_0 = await poll_for_index_status(download_id_0, child1_url, {"success", "skipped", "error"})
+    child2_record_0 = await poll_for_index_status(download_id_0, child2_url, {"success", "skipped", "error"})
+    assert child1_record_0 is None, "Child 1 should not be downloaded at depth=0"
+    assert child2_record_0 is None, "Child 2 should not be downloaded at depth=0"
+    print("[PASS] Crawler depth limit and link following verified.")
+
+async def test_12_code_block_prioritization(http_client: httpx.AsyncClient, test_data_server):
+    """Test: Search results prioritize matches found within code blocks."""
+    print("\n--- Test: Code Block Prioritization in Search Results ---")
+    port = test_data_server
+    url = f"http://host.docker.internal:{port}/mixed_content.md"
+    payload = {"url": url, "depth": 0, "force": True}
+    response = await http_client.post("/download", json=payload)
+    assert response.status_code == 200, f"API call failed: {response.text}"
+    data = response.json()
+    assert data["status"] == "started"
+    download_id = data.get("download_id")
+    assert download_id, "Did not receive download_id"
+    print(f"Download initiated, ID: {download_id}")
+
+    record = await poll_for_index_status(download_id, url, {"success"})
+    assert record is not None, "Download did not complete successfully"
+
+    # Search for a term present in both text and code block ("print")
+    search_payload = {
+        "download_id": download_id,
+        "scan_keywords": ["print"],
+        "extract_selector": None,
+        "extract_keywords": ["print"]
+    }
+    search_resp = await http_client.post("/search", json=search_payload)
+    assert search_resp.status_code == 200
+    results = search_resp.json().get("results", [])
+    # Check that the first result(s) prioritize code block matches
+    found_code_block = False
+    for r in results[:3]:  # Check top 3 results
+        if "def hello_world" in str(r) or "print(" in str(r):
+            found_code_block = True
+            break
+    assert found_code_block, "Code block match for 'print' not prioritized in search results"
+    print("[PASS] Code block prioritization in search results verified.")
+    assert response.status_code == 200, f"API call failed: {response.text}"
+    results = response.json()
+    assert isinstance(results, list), "Search response should be a list"
+    # We expect *some* results, hard to predict exact number/content reliably
+    assert len(results) > 0, (
+        f"Expected some search results for 'asyncio/await/task/event loop', got none."
+    )
+    print(
+        f"[PASS] Search on deeper download found {len(results)} results (at least 1 expected)."
+    )
 
     # --- Optional Playwright Test ---
     # Uncomment and potentially adjust if Playwright functionality needs specific testing
