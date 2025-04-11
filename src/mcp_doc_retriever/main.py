@@ -1,380 +1,369 @@
 """
 MCP Document Retriever FastAPI server.
 
-- Provides `/download` endpoint to start recursive downloads.
-- Provides `/status/{download_id}` endpoint to check download progress. # ADDED
+- Provides `/download` endpoint to start recursive downloads (as background tasks).
+- Provides `/status/{download_id}` endpoint to check download progress/status.
 - Provides `/search` endpoint to search downloaded content.
-- Health check at `/health`.
+- Provides `/` endpoint for SSE connection (MCP protocol).
+- Provides `/health` endpoint for basic health checks.
 
-... (rest of docstring) ...
+Uses an in-memory dictionary (`DOWNLOAD_TASKS`) to track the status of
+background download tasks. This state is lost on server restart. For persistent
+task tracking, consider integrating Redis, a database, or file-based storage.
+
+Handles basic URL validation and SSRF protection on the `/download` endpoint.
+Delegates actual download logic to `downloader.start_recursive_download` and
+search logic to `searcher.perform_search`.
 """
 
 import logging
 import os
+import re
 import sys
 from sse_starlette.sse import EventSourceResponse
 import asyncio
 import json
-
-# --- Force Root Logger Configuration ---
-# Attempt to configure logging ASAP, before FastAPI/Uvicorn might interfere
-log_format = "%(asctime)s - %(levelname)s - [%(name)s:%(funcName)s:%(lineno)d] - %(message)s"
-logging.basicConfig(level=logging.DEBUG, format=log_format, stream=sys.stdout, force=True)
-logger_setup = logging.getLogger(__name__) # Use a distinct name here maybe?
-logger_setup.info("Root logger configured forcefully.") # Log confirmation
-# ---------------------------------------
-
 import time
-import traceback # Added traceback
+import traceback
 import uuid
-from datetime import datetime # Added datetime
-from typing import Dict, List # Added Dict
-from urllib.parse import urlparse, urlunparse
-
+from datetime import datetime
+from typing import Dict, List
+from pathlib import Path
+from concurrent.futures import ThreadPoolExecutor  # Import executor
 from fastapi import BackgroundTasks, FastAPI, HTTPException
 
-from . import config # Import config for base_dir
+# Assuming the new structure with sub-packages:
+from . import config
 from .utils import is_url_private_or_internal
-from .downloader import start_recursive_download
-from .models import ( # Import new TaskStatus
-    DownloadRequest,
-    DownloadStatus,
-    SearchRequest,
-    SearchResultItem,
-    TaskStatus,
+from .downloader.workflow import fetch_documentation_workflow
+from .downloader.git_downloader import check_git_dependency
+from .models import DocDownloadRequest, TaskStatus, SearchRequest, SearchResultItem
+
+# Updated import path for searcher
+from .searcher.searcher import perform_search  # Import from searcher.searcher
+
+
+
+# --- Logger Setup ---
+log_format = (
+    "%(asctime)s - %(levelname)s - [%(name)s:%(funcName)s:%(lineno)d] - %(message)s"
 )
-from .searcher import perform_search
+logging.basicConfig(
+    level=logging.INFO, format=log_format, stream=sys.stdout, force=True
+)
+logger_setup = logging.getLogger("main_setup")
+logger_setup.info("Root logger configured.")
+logging.getLogger("httpx").setLevel(logging.WARNING)
+logging.getLogger("websockets").setLevel(logging.WARNING)
+# --------------------
 
 
-# --- Global State for Task Status ---
-# Simple in-memory store. Will be lost on server restart.
-# For persistence, use Redis, a database, or file-based storage.
+# --- Global State & Resources ---
 DOWNLOAD_TASKS: Dict[str, TaskStatus] = {}
 
-app = FastAPI(title="MCP Document Retriever")
-logger = logging.getLogger(__name__) # Use logger
+# *** Create ONE shared ThreadPoolExecutor for the entire application lifetime ***
+shared_executor = ThreadPoolExecutor(
+    max_workers=os.cpu_count(), thread_name_prefix="FastAPI_SyncWorker"
+)
+# -----------------------------
+
+# --- FastAPI App Initialization ---
+app = FastAPI(
+    title="MCP Document Retriever",
+    description="API for downloading and searching documentation.",
+    version="1.0.0",
+)
+logger = logging.getLogger(__name__)  # Logger for API endpoints
+
+
+# --- Background Task Wrapper ---
+async def run_download_workflow_task(
+    download_id: str,
+    request_data: DocDownloadRequest,
+    # No need to pass executor explicitly if using the global `shared_executor`
+):
+    """Wrapper to run the download workflow and update task status."""
+    task_info = DOWNLOAD_TASKS.get(download_id)
+    if not task_info:
+        logger.error(
+            f"Task {download_id} not found in store at start of background task."
+        )
+        return
+
+    task_info.status = "running"
+    task_info.message = "Download workflow starting..."
+    logger.info(
+        f"Background task started for download_id: {download_id} ({request_data.source_type})"
+    )
+
+    try:
+        base_dir_path = Path(config.DOWNLOAD_BASE_DIR).resolve()
+        req_timeout = config.TIMEOUT_REQUESTS
+        play_timeout = config.TIMEOUT_PLAYWRIGHT
+
+        # *** Pass the global shared_executor to the workflow ***
+        await fetch_documentation_workflow(
+            source_type=request_data.source_type,
+            download_id=download_id,
+            repo_url=str(request_data.repo_url) if request_data.repo_url else None,
+            doc_path=request_data.doc_path,
+            url=str(request_data.url) if request_data.url else None,
+            base_dir=base_dir_path,
+            depth=request_data.depth if request_data.depth is not None else 5,
+            force=request_data.force or False,
+            max_file_size=None,  # Consider adding to API request model if needed
+            timeout_requests=req_timeout,
+            timeout_playwright=play_timeout,
+            max_concurrent_requests=50,  # Make configurable?
+            executor=shared_executor,  # Pass the shared executor instance
+            logger_override=logging.getLogger("mcp_doc_retriever.downloader.workflow"),
+        )
+
+        task_info.status = "completed"
+        task_info.message = "Download workflow finished successfully."
+        task_info.end_time = datetime.now()
+        logger.info(
+            f"Background task completed successfully for download_id: {download_id}"
+        )
+
+    except Exception as e:
+        tb_str = traceback.format_exc()
+        error_msg = f"{type(e).__name__}: {e}"
+        logger.error(
+            f"Background task failed for download_id: {download_id}. Error: {error_msg}\nTraceback: {tb_str}"
+        )
+        task_info.status = "failed"
+        task_info.message = f"Download failed: {error_msg}"
+        task_info.error_details = f"{error_msg}\n{tb_str[:2000]}"
+        task_info.end_time = datetime.now()
+
+
+# --- API Endpoints (SSE, Download, Status, Search, Health - Largely unchanged internally, except download call) ---
+
 
 @app.get("/")
 async def mcp_sse():
-    """SSE endpoint for MCP protocol connection"""
+    """SSE endpoint for MCP protocol connection (placeholder)."""
+
     async def event_generator():
-        # Send initial connection confirmation
         yield {
             "event": "connected",
-            "data": json.dumps({
-                "service": "DocRetriever",
-                "version": "1.0",
-                "capabilities": ["document_download", "document_search"]
-            })
+            "data": json.dumps(
+                {
+                    "service": "DocRetriever",
+                    "version": app.version,
+                    "capabilities": [
+                        "document_download",
+                        "document_search",
+                        "task_status",
+                    ],
+                }
+            ),
         }
-        
-        # Send periodic heartbeats
         while True:
             await asyncio.sleep(15)
-            yield {"event": "heartbeat", "data": json.dumps({"status": "active"})}
-    
+            yield {"event": "heartbeat", "data": json.dumps({"timestamp": time.time()})}
+
     return EventSourceResponse(event_generator())
 
-# --- Background Task Wrapper ---
 
-async def run_download_task(
-    download_id: str,
-    start_url: str,
-    depth: int,
-    force: bool,
-    base_dir: str,
-    use_playwright: bool,
-    timeout_requests: int,
-    timeout_playwright: int,
-    max_file_size: int | None,
-):
-    """Wrapper to run the download and update status."""
-    task_info = DOWNLOAD_TASKS.get(download_id)
-    if not task_info:
-        logger.error(f"Task {download_id} not found in store at start of background task.")
-        # Should not happen if added correctly in /download endpoint
-        return
+@app.post("/download", response_model=TaskStatus, status_code=202)
+async def download_docs(request: DocDownloadRequest, background_tasks: BackgroundTasks):
+    """Accepts download request, validates, schedules background task, returns initial status."""
+    logger.info(
+        f"Received download request: {request.model_dump_json(exclude_none=True)}"
+    )
+    # --- Validation ---
+    target_location = None
+    if request.source_type == "git":
+        if not check_git_dependency():
+            raise HTTPException(status_code=503, detail="Git command not found.")
+        target_location = str(request.repo_url)
+    elif request.source_type in ["website", "playwright"]:
+        target_location = str(request.url)
+        if is_url_private_or_internal(target_location):
+            raise HTTPException(status_code=400, detail="Blocked potential SSRF URL.")
+    else:
+        raise HTTPException(status_code=400, detail="Invalid source_type.")
 
-    # Update status to running
-    task_info.status = "running"
-    task_info.message = "Download process starting..."
-    DOWNLOAD_TASKS[download_id] = task_info # Update store
+    safe_download_id = re.sub(r"[^\w\-\_]+", "_", request.download_id)
+    if not safe_download_id or len(safe_download_id) < 3:
+        safe_download_id = f"dl_{uuid.uuid4().hex[:8]}"
+        logger.warning(f"Using generated ID: {safe_download_id}")
+    elif safe_download_id != request.download_id:
+        logger.warning(f"Sanitized ID '{request.download_id}' to '{safe_download_id}'")
 
-    logger.info(f"Background task started for download_id: {download_id}")
-
-    try:
-        # --- Execute the actual download ---
-        # Assuming TIMEOUT_PLAYWRIGHT is defined in config or has a default
-        playwright_timeout = timeout_playwright if timeout_playwright is not None else getattr(config, 'TIMEOUT_PLAYWRIGHT', 300)
-
-        await start_recursive_download(
-            start_url=start_url,
-            depth=depth,
-            force=force,
-            download_id=download_id,
-            base_dir=base_dir,
-            use_playwright=use_playwright,
-            timeout_requests=timeout_requests,
-            timeout_playwright=playwright_timeout, # Use resolved timeout
-            max_file_size=max_file_size,
-        )
-        # --- Update status on successful completion ---
-        task_info.status = "completed"
-        task_info.message = "Download finished successfully."
-        task_info.end_time = datetime.now()
-        logger.info(f"Background task completed successfully for download_id: {download_id}")
-
-    except Exception as e:
-        # --- Update status on failure ---
-        tb_str = traceback.format_exc()
-        logger.error(f"Background task failed for download_id: {download_id}. Error: {e}\nTraceback: {tb_str}")
-        task_info.status = "failed"
-        task_info.message = f"Download failed: {type(e).__name__}"
-        task_info.error_details = f"{str(e)}\n{tb_str}" # Store detailed error
-        task_info.end_time = datetime.now()
-
-    finally:
-        # Ensure the final status is saved back to the store
-        DOWNLOAD_TASKS[download_id] = task_info
-
-
-# --- API Endpoints ---
-
-@app.post("/download", response_model=DownloadStatus)
-async def download(request: DownloadRequest, background_tasks: BackgroundTasks):
-    logger.info(f"Received download request: {request.url}, depth={request.depth}")
-    # Validate URL
-    try:
-        parsed = urlparse(request.url)
-        if not parsed.scheme or not parsed.netloc:
-            # Try to add scheme if missing
-            temp_url = "http://" + request.url if not request.url.startswith(("http://", "https://")) else request.url
-            parsed = urlparse(temp_url)
-            if not parsed.scheme or not parsed.netloc:
-                raise ValueError("Invalid URL format after attempting to add scheme.")
-        # Canonicalize URL (ensure scheme, normalize path)
-        canonical_url = urlunparse(parsed._replace(path=parsed.path or "/", query="", fragment=""))
-        # SSRF protection: block internal/private URLs
-        if is_url_private_or_internal(canonical_url):
-            logger.warning(f"Blocked SSRF-prone/internal URL: {canonical_url}")
-            return DownloadStatus(
-                status="failed_validation",
-                message="Blocked download: URL resolves to an internal/private address or forbidden hostname (potential SSRF).",
-                download_id=None
-            )
-    except Exception as e:
-        logger.warning(f"Invalid URL received: {request.url} - Error: {e}")
-        # Return failure status directly without starting task
-        return DownloadStatus(
-            status="failed_validation",
-            message=f"Invalid URL format: {e}",
-            download_id=None
+    if (
+        safe_download_id in DOWNLOAD_TASKS
+        and DOWNLOAD_TASKS[safe_download_id].status == "running"
+    ):
+        raise HTTPException(
+            status_code=409, detail=f"Task '{safe_download_id}' already running."
         )
 
-    # Use default depth=1 if not provided or invalid (already handled by Pydantic ge=0)
-    depth = request.depth
-
-    # Generate unique download_id
-    download_id = str(uuid.uuid4())
-
-    # --- Add task to global store with 'pending' status ---
-    DOWNLOAD_TASKS[download_id] = TaskStatus(
+    # --- Add task to store ---
+    initial_task_status = TaskStatus(
         status="pending",
         start_time=datetime.now(),
-        message="Download task queued."
+        message=f"Download task for {target_location} queued.",
     )
-    logger.info(f"Download task {download_id} created for URL: {canonical_url}")
+    DOWNLOAD_TASKS[safe_download_id] = initial_task_status
+    logger.info(f"Task {safe_download_id} created and queued for {target_location}")
 
-    # Get base directory from config (or default)
-    base_dir = config.DOWNLOAD_BASE_DIR
-    # Resolve timeouts, using config as fallback
-    req_timeout = request.timeout if request.timeout is not None else config.TIMEOUT_REQUESTS
-    # Assuming TIMEOUT_PLAYWRIGHT exists in config or provide a default
-    playwright_timeout = request.timeout if request.timeout is not None else getattr(config, 'TIMEOUT_PLAYWRIGHT', 300)
-
-
-    # --- Schedule the background task ---
-    logger.debug(f"Adding background task for download ID: {download_id}, URL: {canonical_url}") # ADDED FOR DEBUG
+    # --- Schedule background task ---
     background_tasks.add_task(
-        run_download_task, # Use the wrapper function
-        download_id=download_id,
-        start_url=canonical_url,
-        depth=depth,
-        force=request.force,
-        base_dir=base_dir,
-        use_playwright=request.use_playwright or False,
-        timeout_requests=req_timeout, # Use resolved timeout
-        timeout_playwright=playwright_timeout, # Use resolved timeout
-        max_file_size=request.max_file_size # Pass max_size alias value
+        run_download_workflow_task, download_id=safe_download_id, request_data=request
     )
-    logger.debug(f"Background task added for download ID: {download_id}") # ADDED FOR DEBUG
-
-    # Return 'started' status and the ID
-    return DownloadStatus(
-        status="started",
-        message=f"Download initiated for {canonical_url}",
-        download_id=download_id,
-    )
+    logger.debug(f"Background task added for {safe_download_id}")
+    return initial_task_status
 
 
-# --- NEW Status Endpoint ---
 @app.get("/status/{download_id}", response_model=TaskStatus)
 async def get_status(download_id: str):
-    """Check the status of a download task."""
-    logger.debug(f"Status query received for download_id: {download_id}")
+    """Retrieves the current status of a specific download task."""
+    logger.debug(f"Status query for: {download_id}")
     task_info = DOWNLOAD_TASKS.get(download_id)
     if task_info is None:
-        logger.warning(f"Status query for unknown download_id: {download_id}")
         raise HTTPException(status_code=404, detail="Download ID not found")
-    logger.debug(f"Returning status for {download_id}: {task_info.status}")
     return task_info
 
 
-# --- Existing Search and Health Endpoints ---
-
 @app.post("/search", response_model=List[SearchResultItem])
-async def search(request: SearchRequest):
-    logger.info(f"Search request received for download_id: {request.download_id}")
-    # Check task status first (optional but good practice)
+async def search_docs(request: SearchRequest):
+    """Searches downloaded content for a completed download ID."""
+    logger.info(f"Search request for: {request.download_id}")
     task_info = DOWNLOAD_TASKS.get(request.download_id)
-    if task_info and task_info.status not in ["completed"]:
-         logger.warning(f"Search attempted on non-completed task {request.download_id} (status: {task_info.status})")
-         # Decide: Allow search anyway, or raise error? Let's allow, but log.
-         # Or raise: raise HTTPException(status_code=409, detail=f"Download task status is '{task_info.status}', not 'completed'.")
-
-    # Get base directory from config
-    base_dir = config.DOWNLOAD_BASE_DIR
-
-    # Construct index path using the determined base directory and the raw download_id
-    # Note: searcher also calculates this, maybe pass base_dir to searcher?
-    index_path = os.path.join(base_dir, "index", f"{request.download_id}.jsonl")
-
-    if not os.path.exists(index_path):
-         # Check if the task failed, providing a more informative error
-        if task_info and task_info.status == "failed":
-             raise HTTPException(status_code=404, detail=f"Index file not found. Task failed: {task_info.message}")
-        # Check if task is still pending/running
-        elif task_info and task_info.status in ["pending", "running"]:
-             raise HTTPException(status_code=404, detail=f"Index file not found. Task status is '{task_info.status}'.")
-        # Otherwise, generic not found
-        else:
-             logger.warning(f"Index file not found for search: {index_path} (Task ID: {request.download_id})")
-             raise HTTPException(status_code=404, detail="Index file not found for the given download ID.")
+    if task_info is None:
+        raise HTTPException(
+            status_code=404, detail=f"ID '{request.download_id}' not found."
+        )
+    if task_info.status != "completed":
+        raise HTTPException(
+            status_code=409,
+            detail=f"Task status is '{task_info.status}', requires 'completed'.",
+        )
 
     try:
+        base_dir_path = Path(config.DOWNLOAD_BASE_DIR).resolve()
+        if not base_dir_path.is_dir():
+            raise HTTPException(
+                status_code=500,
+                detail="Server config error: Base download directory not found.",
+            )
+
+        # *** Use updated import path for perform_search ***
         results = perform_search(
             download_id=request.download_id,
             scan_keywords=request.scan_keywords,
             selector=request.extract_selector,
             extract_keywords=request.extract_keywords,
-            base_dir=base_dir # Pass base_dir for consistency
+            base_dir=base_dir_path,
         )
-        logger.info(f"Search for {request.download_id} yielded {len(results)} results.")
+        logger.info(
+            f"Search for '{request.download_id}' yielded {len(results)} results."
+        )
         return results
-    except FileNotFoundError: # Should be caught above, but defense in depth
-         logger.error(f"Search failed because index file disappeared: {index_path}")
-         raise HTTPException(status_code=404, detail="Index file not found during search execution.")
+    except FileNotFoundError as e:
+        logger.error(
+            f"Search failed for '{request.download_id}': File not found. {e}",
+            exc_info=True,
+        )
+        raise HTTPException(
+            status_code=404,
+            detail=f"Search data incomplete/missing for ID '{request.download_id}'.",
+        )
     except Exception as e:
-         logger.error(f"Search failed for download_id {request.download_id}: {e}", exc_info=True)
-         raise HTTPException(status_code=500, detail=f"An internal error occurred during search: {e}")
+        logger.error(f"Search failed for '{request.download_id}': {e}", exc_info=True)
+        raise HTTPException(
+            status_code=500, detail=f"Internal error during search: {type(e).__name__}"
+        )
 
 
 @app.get("/health")
 async def health():
-    """Health check endpoint"""
-    return {"status": "healthy"}
+    """Basic health check endpoint."""
+    logger.debug("Health check requested.")
+    return {"status": "healthy", "timestamp": datetime.now().isoformat()}
 
 
-# --- Existing Usage Example ---
+# --- Cleanup Hook ---
+@app.lifespan("shutdown")
+async def app_shutdown():
+    """Gracefully shutdown the shared thread pool executor."""
+    logger.info("Application shutting down. Closing thread pool executor.")
+    shared_executor.shutdown(wait=True)
+    logger.info("Executor shutdown complete.")
+
+
+# --- Standalone Example Usage ---
 def usage_example():
-    """
-    Demonstrates programmatic usage of the main module.
-
-    Note: Normally this module runs as a FastAPI server. This example shows
-    direct usage of the underlying functionality. Includes status check.
-    """
+    """Demonstrates programmatic usage (runs workflow directly)."""
+    # ... (usage_example code remains largely the same, but ensure it creates its own executor
+    #      or potentially uses the global one for the example run, managing its lifecycle) ...
     import asyncio
     import uuid
-    # Re-import necessary components for standalone run
-    from mcp_doc_retriever.downloader import start_recursive_download
-    from mcp_doc_retriever.searcher import perform_search
-    # from mcp_doc_retriever import config # Import config for base_dir # Already imported
+    import shutil
+    from mcp_doc_retriever.downloader.workflow import fetch_documentation_workflow
+    from mcp_doc_retriever.searcher.searcher import perform_search
+    from mcp_doc_retriever import config
+
+    example_executor = ThreadPoolExecutor(
+        max_workers=2, thread_name_prefix="ExampleWorker"
+    )
 
     async def run_example():
-        print("\n=== Starting Download Test ===")
-        test_url = "https://example.com"
-        test_download_id = str(uuid.uuid4())
-        test_base_dir = "./downloads_test_polling" # Use separate dir
+        print("\n=== Starting Standalone Example ===")
+        test_url = "https://httpbin.org/html"
+        test_id = f"standalone_{uuid.uuid4().hex[:8]}"
+        test_dir = Path("./downloads_standalone_test").resolve()
+        print(f"ID: {test_id}, Base Dir: {test_dir}")
+        if test_dir.exists():
+            shutil.rmtree(test_dir)
+            test_dir.mkdir(parents=True)
+        print(f"\nRunning download for {test_url}...")
+        dl_ok = False
+        try:
+            await fetch_documentation_workflow(
+                source_type="website",
+                download_id=test_id,
+                url=test_url,
+                base_dir=test_dir,
+                depth=0,
+                force=True,
+                executor=example_executor,
+                timeout_requests=config.TIMEOUT_REQUESTS,
+                timeout_playwright=config.TIMEOUT_PLAYWRIGHT,
+            )
+            print("Download workflow OK.")
+            dl_ok = True
+        except Exception as e:
+            print(f"Download FAILED: {e}")
+            logger.error("Standalone failed", exc_info=True)
+        if dl_ok:
+            idx_path = test_dir / "index" / f"{test_id}.jsonl"
+            print(f"\nIndex created: {idx_path.is_file()}")
+            print("\nTesting Search...")
+            try:
+                results = perform_search(test_id, ["H1"], "title", None, test_dir)
+                print(f"Found {len(results)} title results.")
+                results_p = perform_search(test_id, ["paragraph"], "p", None, test_dir)
+                print(f"Found {len(results_p)} paragraph results.")
+            except Exception as e:
+                print(f"Search FAILED: {e}")
+        example_executor.shutdown(wait=True)
+        print("\nStandalone example finished.")
 
-        # --- Simulate API call ---
-        print(f"Simulating download request for {test_url}...")
-        # 1. Add initial status
-        DOWNLOAD_TASKS[test_download_id] = TaskStatus(
-            status="pending", start_time=datetime.now()
-        )
-        # 2. Run the task (using wrapper logic conceptually)
-        print(f"Running download task for ID: {test_download_id}")
-        await run_download_task( # Manually call the wrapper for the example
-             download_id=test_download_id,
-             start_url=test_url,
-             depth=0,
-             force=True,
-             base_dir=test_base_dir, # Use test dir
-             use_playwright=False,
-             timeout_requests=30,
-             timeout_playwright=60, # Assuming default
-             max_file_size=None,
-        )
-
-        print("\n=== Checking Task Status ===")
-        status = DOWNLOAD_TASKS.get(test_download_id)
-        if status:
-             print(f"Status: {status.status}")
-             print(f"Message: {status.message}")
-             if status.error_details:
-                 print(f"Error: {status.error_details[:100]}...") # Print snippet
-        else:
-             print("Error: Task status not found in store!")
-
-        print("\n=== Verifying Download (if completed) ===")
-        if status and status.status == "completed":
-            index_path = os.path.join(test_base_dir, "index", f"{test_download_id}.jsonl")
-            if os.path.exists(index_path):
-                print(f"Success: Index file created at {index_path}")
-                print("\n=== Testing Search ===")
-                try:
-                    results = perform_search(
-                        test_download_id,
-                        scan_keywords=["Example"],
-                        selector="title",
-                        extract_keywords=None,
-                        base_dir=test_base_dir # Pass test dir
-                    )
-                    print(f"Found {len(results)} search results")
-                    for result in results:
-                        print(f"- {result.original_url}: {result.extracted_content}")
-                except Exception as e:
-                    print(f"Search failed: {e}")
-            else:
-                print(f"Error: Index file not found at {index_path} despite 'completed' status.")
-        else:
-            print("Skipping file verification and search as task did not complete successfully.")
-
-    # --- Setup Logging for Example ---
-    log_level = logging.INFO
-    log_format = "%(asctime)s - %(levelname)s - [%(name)s:%(funcName)s:%(lineno)d] - %(message)s"
-    logging.basicConfig(level=log_level, format=log_format)
-    # --- Run Example ---
+    logging.basicConfig(
+        level=logging.INFO, format=log_format, stream=sys.stdout, force=True
+    )
     asyncio.run(run_example())
 
 
 if __name__ == "__main__":
-    print("""
-Note: This module is primarily designed to run as a FastAPI server.
-The usage example demonstrates direct functionality but may have import limitations.
-
-To run properly:
-1. Install the package: pip install -e .
-2. Run the FastAPI server: uvicorn src.mcp_doc_retriever.main:app --reload --port 8000
-""") # Changed port to 8000 to match Dockerfile CMD
+    print(
+        """
+NOTE: Run as FastAPI server: uvicorn src.mcp_doc_retriever.main:app --reload --port 8000 --host 0.0.0.0
+Running directly executes usage_example.""",
+        file=sys.stderr,
+    )
     usage_example()

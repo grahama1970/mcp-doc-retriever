@@ -177,7 +177,7 @@ def usage_example():
             level=logging.INFO, format="[%(levelname)s] %(name)s: %(message)s"
         )
 
-    print(f"\n--- Configuration Usage Example ---")
+    print("\n--- Configuration Usage Example ---")
     print(f"Attempted to load config file from: {CONFIG_PATH}")
     print(f"Resolved DOWNLOAD_BASE_DIR: {DOWNLOAD_BASE_DIR}")
     print(f"Resolved TIMEOUT_REQUESTS: {TIMEOUT_REQUESTS}")

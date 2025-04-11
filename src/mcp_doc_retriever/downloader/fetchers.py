@@ -68,7 +68,7 @@ from mcp_doc_retriever.utils import (
     extract_content_blocks_from_markdown,
     detect_arangosearch_json_example,
 )
-from mcp_doc_retriever.models import ContentBlock
+# from mcp_doc_retriever.models import ContentBlock
 
 logger = logging.getLogger(__name__)
 
@@ -907,7 +907,7 @@ def usage_example():
     )
 
     async def run_examples():
-        logger.info(f"\n--- Testing fetch_single_url_requests ---")
+        logger.info("\n--- Testing fetch_single_url_requests ---")
         req_target = os.path.join(test_base_dir, "requests_example.html")
         req_result = await fetch_single_url_requests(
             url="https://example.com",
@@ -919,10 +919,10 @@ def usage_example():
         if os.path.exists(req_target):
             logger.info(f"Requests file created: {req_target}")
 
-        logger.info(f"\n--- Testing fetch_single_url_playwright ---")
+        logger.info("\n--- Testing fetch_single_url_playwright ---")
         # Check if Playwright is likely installed before running its example
         try:
-            from playwright.async_api import async_playwright
+            # from playwright.async_api import async_playwright
 
             pw_available = True
         except ImportError:
@@ -945,7 +945,7 @@ def usage_example():
                 logger.info(f"Playwright file created: {pw_target}")
 
     asyncio.run(run_examples())
-    logger.info(f"\nFetcher examples finished.")
+    logger.info("\nFetcher examples finished.")
 
 
 if __name__ == "__main__":

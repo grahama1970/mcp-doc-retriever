@@ -1,3 +1,10 @@
+Integrate tqdm for progress reporting in the download process.
+For "website" and "playwright" source types, if we can pre-scan for links (e.g., via a sitemap or initial crawl), use that to set the total for tqdm. If not, use tqdm in "unknown total" mode.
+For "git" source type, after cloning, count the number of files matching .html, .htm, .md, .rst in the doc_path (if provided) and use that as the total.
+The actual download logic is stubbed, but the progress bar integration can be scaffolded in the conditional branches, with clear comments for future implementation.
+I will add the tqdm import at the top if not present.
+
+
 """
 Module: downloader.py
 
@@ -43,32 +50,31 @@ from typing import Optional
 
 
 async def fetch_documentation_workflow(
-    docs_url: str,
+    source_type: str,
     download_id: str,
+    repo_url: Optional[str] = None,
+    doc_path: Optional[str] = None,
+    url: Optional[str] = None,
     base_dir: str = "./downloads",
     depth: int = 3,
     force: bool = False,
-    use_playwright: bool = False,
     max_file_size: Optional[int] = 10 * 1024 * 1024,
     timeout_requests: Optional[int] = None,
     timeout_playwright: Optional[int] = None,
     logger_override=None,
 ) -> None:
     """
-    Orchestrates documentation fetching:
-    1. Detects if the site is static or JS-driven.
-    2. If static, downloads recursively.
-    3. If JS-driven, uses Perplexity to check for a static version elsewhere.
-    4. If static site found, downloads it; else, falls back to dynamic scraping.
-    Adds deep contextual logging and enforces directory/file restrictions.
+    Orchestrates documentation fetching based on the source type.
 
     Args:
-        docs_url: The documentation site URL.
+        source_type: The type of documentation source ("git", "website", or "playwright").
         download_id: Unique identifier for this download batch.
+        repo_url: For git sources, the repository URL.
+        doc_path: For git sources, the path to documentation within the repo.
+        url: For website/playwright sources, the documentation URL.
         base_dir: Root directory for downloads.
         depth: Max recursion depth for fallback crawling.
         force: Overwrite existing files.
-        use_playwright: Use Playwright for fallback crawling.
         max_file_size: Max file size for downloads.
         timeout_requests: Timeout for httpx requests.
         timeout_playwright: Timeout for Playwright.
@@ -84,33 +90,55 @@ async def fetch_documentation_workflow(
         timeout_requests = TIMEOUT_REQUESTS
     if timeout_playwright is None:
         timeout_playwright = TIMEOUT_PLAYWRIGHT
-    _logger.info(f"Starting documentation fetch workflow for {docs_url} (ID: {download_id})")
+    _logger.info(f"Starting documentation fetch workflow (source_type={source_type}, ID={download_id})")
 
-    # Step 1: Detect site type
-    # Fallback to dynamic scraping (Playwright or requests)
-    await start_recursive_download(
-        start_url=docs_url,
-        depth=depth,
-        force=force,
-        download_id=download_id,
-        base_dir=base_dir,
-        use_playwright=use_playwright,
-        max_file_size=max_file_size,
-        timeout_requests=timeout_requests,
-        timeout_playwright=timeout_playwright,
-    )
-    try:
-        from mcp_doc_retriever.example_extractor import extract_and_index_examples
-        abs_base_dir = os.path.abspath(base_dir)
-        content_dir = os.path.join(abs_base_dir, "content", download_id)
-        if not os.path.exists(content_dir):
-            content_dir = os.path.join(abs_base_dir, "content")
-        example_index_path = os.path.join(abs_base_dir, "index", f"{download_id}_examples.jsonl")
-        n_examples = extract_and_index_examples(content_dir, example_index_path, file_types=[".html", ".htm"])
-        _logger.info(f"[Workflow] Extracted and indexed {n_examples} JSON examples from HTML to {example_index_path}")
-    except Exception as ex:
-        _logger.error(f"[Workflow] Example extraction/indexing failed: {ex}", exc_info=True)
+    if source_type == "git":
+        _logger.info("Processing git source...")
+        # TODO: Implement git clone/sparse-checkout logic here
+        # TODO: After cloning, count relevant files (e.g., .md, .rst, .html) in doc_path
+        total_files = 0 # Placeholder: Calculate actual count
+        _logger.info(f"Estimated {total_files} files to process from git repo.")
+        
+        # Example tqdm usage (replace with actual processing loop)
+        async for _ in tqdm(range(total_files), desc="Processing git files", unit="file", total=total_files):
+            await asyncio.sleep(0.01) # Simulate file processing
+            # TODO: Add actual file processing logic (copying, parsing, etc.)
+        _logger.info("Git processing complete.")
+        pass # Keep pass until fully implemented
 
+    elif source_type == "website":
+        _logger.info("Processing website source...")
+        # TODO: Implement website crawling logic (e.g., using start_recursive_download)
+        # TODO: Optionally, pre-scan for total links (e.g., sitemap) or use unknown total
+        
+        # Example tqdm usage (assuming unknown total initially)
+        # The actual total might be determined during the crawl
+        pbar = tqdm(desc="Downloading website pages", unit="page")
+        # TODO: Integrate pbar.update(1) within the download loop of start_recursive_download
+        # Example call (replace with actual integration):
+        # await start_recursive_download(..., progress_bar=pbar)
+        await asyncio.sleep(0.1) # Simulate download start
+        pbar.update(1) # Simulate one page downloaded
+        pbar.close() # Close when download finishes
+        _logger.info("Website processing complete.")
+        pass # Keep pass until fully implemented
+
+    elif source_type == "playwright":
+        _logger.info("Processing playwright source...")
+        # TODO: Implement Playwright-based crawling logic (similar to website, but using Playwright fetcher)
+        # TODO: Optionally, pre-scan or use unknown total for tqdm
+        
+        # Example tqdm usage (assuming unknown total initially)
+        pbar = tqdm(desc="Downloading pages via Playwright", unit="page")
+        # TODO: Integrate pbar.update(1) within the Playwright download loop
+        await asyncio.sleep(0.1) # Simulate download start
+        pbar.update(1) # Simulate one page downloaded
+        pbar.close() # Close when download finishes
+        _logger.info("Playwright processing complete.")
+        pass # Keep pass until fully implemented
+
+    else:
+        raise ValueError(f"Invalid source_type: {source_type}")
 import os
 import json
 import asyncio

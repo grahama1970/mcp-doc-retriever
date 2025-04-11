@@ -1,168 +1,278 @@
+# File: src/mcp_doc_retriever/cli.py (Updated)
+
 """
-Module: cli.py
+Module: cli.py (Main Project CLI Entry Point)
 
 Description:
-Command-line interface for MCP Document Retriever.
-Provides CLI commands for:
-- Recursive downloading
-- Searching downloaded content (future)
-- Other utilities (future)
+Provides the main command-line interface for the MCP Document Retriever project
+using Typer. It defines commands for downloading and potentially searching documentation.
 
-Third-party packages:
-- argparse: https://docs.python.org/3/library/argparse.html
-- asyncio: https://docs.python.org/3/library/asyncio.html
-
-Sample input:
-python -m src.mcp_doc_retriever.cli --url https://docs.python.org/3/ --depth 1 --output-dir ./tests/outputs --download-id cli_test_run --force
-
-Expected output:
-- Downloads content recursively from the URL.
-- Saves files and index.
-- Prints progress and summary.
-
+Usage:
+  python -m mcp_doc_retriever download ...
+  python -m mcp_doc_retriever search ... (if search commands are added)
 """
 
-import argparse
+import typer
+import logging
 import asyncio
+import re
 import os
 import sys
-import time
-import logging
+import uuid
+from pathlib import Path
+from typing import Optional, List
+from concurrent.futures import ThreadPoolExecutor
 
-from mcp_doc_retriever.downloader import start_recursive_download
+# Import necessary functions/modules from the package
+from .downloader.workflow import fetch_documentation_workflow
+from .downloader.git_downloader import check_git_dependency
 
-logger = logging.getLogger(__name__)
+# from .searcher import cli as searcher_cli # Example if search commands exist
+from .utils import (
+    TIMEOUT_REQUESTS,
+    TIMEOUT_PLAYWRIGHT,
+)  # Import defaults
 
-def parse_args():
-    parser = argparse.ArgumentParser(
-        description="MCP Document Retriever CLI",
-        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
-    )
-    parser.add_argument(
-        "--url", type=str, required=True, help="Starting URL to download."
-    )
-    parser.add_argument(
-        "--depth",
-        type=int,
-        default=1,
-        help="Recursion depth (0 = only start URL, 1 = start URL + links on it, etc.).",
-    )
-    parser.add_argument(
-        "--force", action="store_true", help="Force overwrite existing files."
-    )
-    parser.add_argument(
-        "--output-dir",
-        type=str,
-        default="./downloads",
-        help="Base output directory for 'content' and 'index' subdirectories.",
-    )
-    parser.add_argument(
-        "--download-id",
-        type=str,
-        default=f"cli_download_{int(time.time())}",
-        help="Identifier for this download batch (used for index filename).",
-    )
-    parser.add_argument(
-        "--use-playwright",
-        action="store_true",
-        help="Use Playwright fetcher instead of httpx (slower, needs browser install).",
-    )
-    parser.add_argument(
-        "--timeout",
-        type=int,
-        default=30,
-        help="Timeout in seconds for network requests.",
-    )
-    parser.add_argument(
-        "--max-size",
-        type=int,
-        default=None,
-        help="Maximum file size in bytes for downloads (e.g., 10485760 for 10MB).",
-    )
-    parser.add_argument(
-        "--log-level",
-        choices=["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"],
-        default="INFO",
-        help="Set the logging level.",
-    )
-    return parser.parse_args()
+# --- Typer App Initialization ---
+app = typer.Typer(
+    name="mcp-doc-retriever",
+    help="MCP Document Retriever: Download and process documentation.",
+    add_completion=False,
+    no_args_is_help=True,
+)
 
-async def run_downloader(args):
-    abs_output_dir = os.path.abspath(args.output_dir)
-    os.makedirs(abs_output_dir, exist_ok=True)
+# --- Logging Configuration ---
+# Configure root logger - basic setup
+log_format = "%(asctime)s - %(levelname)-8s - [%(name)s] %(message)s"
+date_format = "%Y-%m-%d %H:%M:%S"
+logging.basicConfig(
+    level=logging.INFO,
+    format=log_format,
+    datefmt=date_format,
+    stream=sys.stdout,
+    force=True,
+)
+logger_cli = logging.getLogger("cli")  # Logger for CLI specific messages
 
-    await start_recursive_download(
-        start_url=args.url,
-        depth=args.depth,
-        force=args.force,
-        download_id=args.download_id,
-        base_dir=abs_output_dir,
-        use_playwright=args.use_playwright,
-        timeout_requests=args.timeout,
-        timeout_playwright=args.timeout,
-        max_file_size=args.max_size,
+# Silence noisy libraries by default
+logging.getLogger("httpx").setLevel(logging.WARNING)
+logging.getLogger("websockets").setLevel(logging.WARNING)
+
+# --- Shared ThreadPoolExecutor ---
+# *** Create the executor here in the main CLI entry point ***
+cli_executor = ThreadPoolExecutor(
+    max_workers=os.cpu_count(), thread_name_prefix="CLI_SyncWorker"
+)
+
+# --- Define Commands Directly on the Main App ---
+
+
+@app.command(
+    "download",  # The command name itself
+    help="Download documentation from Git, Website, or Playwright source.",
+)
+def download_command(
+    # Arguments defined directly here now
+    source_type: str = typer.Argument(
+        ...,
+        help='Type of source: "git", "website", or "playwright". Case-insensitive.',
+        metavar="SOURCE_TYPE",
+    ),
+    source_location: str = typer.Argument(
+        ...,
+        help="URL (for website/playwright) or Git repository URL.",
+        metavar="URL_OR_REPO",
+    ),
+    download_id: str = typer.Argument(
+        ...,
+        help="Unique identifier for this download batch (used in paths).",
+        metavar="DOWNLOAD_ID",
+    ),
+    doc_path: Optional[str] = typer.Option(
+        None,
+        "--doc-path",
+        "-p",
+        help="Path within git repo containing docs (for git source type & sparse checkout).",
+    ),
+    depth: int = typer.Option(
+        5, "--depth", "-d", help="Max recursion depth for website/playwright crawl."
+    ),
+    base_dir: Path = typer.Option(
+        Path("./downloads"),
+        "--base-dir",
+        "-b",
+        help="Root directory for downloads.",
+        resolve_path=True,
+        file_okay=False,
+        dir_okay=True,
+        writable=True,
+    ),
+    force: bool = typer.Option(
+        False, "--force", "-f", help="Overwrite existing clone/files if they exist."
+    ),
+    max_file_size: Optional[int] = typer.Option(
+        10 * 1024 * 1024,
+        "--max-file-size",
+        help="Max file size in bytes (0 or negative for unlimited).",
+    ),
+    timeout_requests: Optional[int] = typer.Option(
+        None,
+        "--timeout-req",
+        help=f"Timeout for HTTP requests (default: {TIMEOUT_REQUESTS}s).",
+    ),
+    timeout_playwright: Optional[int] = typer.Option(
+        None,
+        "--timeout-play",
+        help=f"Timeout for Playwright operations (default: {TIMEOUT_PLAYWRIGHT}s).",
+    ),
+    max_concurrent: int = typer.Option(
+        50,
+        "--max-concurrent",
+        "-c",
+        help="Maximum concurrent download requests for web crawls.",
+    ),
+    verbose: bool = typer.Option(
+        False, "--verbose", "-v", help="Enable debug logging for this download."
+    ),
+):
+    """
+    CLI command to initiate the documentation download workflow.
+    Parses arguments, performs validation, sets logging, and calls the core workflow.
+    """
+    # --- Logging Setup (Adjust level based on verbose flag) ---
+    log_level = logging.DEBUG if verbose else logging.INFO
+    root_logger = logging.getLogger()
+    for handler in root_logger.handlers:
+        handler.setLevel(log_level)
+    root_logger.setLevel(log_level)
+    if not verbose:  # Re-silence if needed
+        logging.getLogger("httpx").setLevel(logging.WARNING)
+        logging.getLogger("websockets").setLevel(logging.WARNING)
+    logger_cli.info(
+        f"Log level set to {logging.getLevelName(log_level)} for download '{download_id}'"
     )
+    logger_cli.debug(f"Download Arguments: {locals()}")
 
-def main():
-    args = parse_args()
+    # --- Argument Validation and Processing (same as before) ---
+    source_type = source_type.lower()
+    valid_source_types = ["git", "website", "playwright"]
+    if source_type not in valid_source_types:
+        logger_cli.error(
+            f"Invalid source_type '{source_type}'. Choose from {valid_source_types}"
+        )
+        raise typer.BadParameter(f"Invalid source_type '{source_type}'.")
 
-    log_level = getattr(logging, args.log_level.upper(), logging.INFO)
-    logging.basicConfig(
-        level=log_level,
-        format="%(asctime)s - %(levelname)s - [%(name)s:%(funcName)s] - %(message)s",
-        datefmt="%Y-%m-%d %H:%M:%S",
-    )
-    logging.getLogger("httpx").setLevel(logging.WARNING)
-    logging.getLogger("httpcore").setLevel(logging.WARNING)
-    logging.getLogger("playwright").setLevel(logging.WARNING)
+    if source_type == "git":
+        if not source_location:
+            raise typer.BadParameter("Missing repository URL for git.")
+        if not check_git_dependency():
+            logger_cli.error("Git dependency check failed.")
+            raise typer.Exit(code=1)
+        if doc_path is None:
+            logger_cli.warning("doc_path not provided for git. Performing full clone.")
+    elif source_type in ["website", "playwright"]:
+        if not source_location:
+            raise typer.BadParameter(f"Missing URL for {source_type}.")
+        if doc_path:
+            logger_cli.warning("--doc-path ignored for non-git source type.")
+            doc_path = None
 
-    print("\n--- MCP Document Retriever CLI ---")
-    print(f"Starting download with parameters:")
-    print(f"  Start URL:      {args.url}")
-    print(f"  Depth:          {args.depth}")
-    print(f"  Force Overwrite:{args.force}")
-    print(f"  Output Dir:     {os.path.abspath(args.output_dir)}")
-    print(f"  Download ID:    {args.download_id}")
-    print(f"  Fetcher:        {'Playwright' if args.use_playwright else 'httpx'}")
-    print(f"  Timeout:        {args.timeout}s")
-    print(f"  Max File Size:  {args.max_size or 'Unlimited'} bytes")
-    print(f"  Log Level:      {args.log_level}")
-    print("-" * 30)
+    safe_download_id = re.sub(r"[^\w\-]+", "_", download_id)
+    if not safe_download_id or len(safe_download_id) < 3:
+        safe_download_id = f"dl_{uuid.uuid4().hex[:8]}"
+        logger_cli.warning(f"Using generated ID: {safe_download_id}")
+    elif safe_download_id != download_id:
+        logger_cli.warning(f"Sanitized ID '{download_id}' to '{safe_download_id}'")
 
     try:
-        asyncio.run(run_downloader(args))
-        print("-" * 30)
-        print("Download process completed.")
-        print(
-            f"Check index file: {os.path.join(os.path.abspath(args.output_dir), 'index', args.download_id + '.jsonl')}"
+        base_dir.mkdir(parents=True, exist_ok=True)
+        logger_cli.info(f"Using base directory: {base_dir.resolve()}")
+    except OSError as e:
+        logger_cli.error(f"Failed to create base directory {base_dir}: {e}")
+        raise typer.Exit(code=1)
+
+    # --- Execute Async Workflow ---
+    try:
+        logger_cli.info(f"Starting download workflow for ID: {safe_download_id}")
+        # *** Pass the cli_executor instance here ***
+        asyncio.run(
+            fetch_documentation_workflow(
+                source_type=source_type,
+                download_id=safe_download_id,
+                repo_url=source_location if source_type == "git" else None,
+                doc_path=doc_path,
+                url=source_location if source_type != "git" else None,
+                base_dir=base_dir,
+                depth=depth,
+                force=force,
+                max_file_size=max_file_size
+                if max_file_size and max_file_size > 0
+                else None,
+                timeout_requests=timeout_requests,
+                timeout_playwright=timeout_playwright,
+                max_concurrent_requests=max_concurrent,
+                executor=cli_executor,  # Pass the executor created above
+                logger_override=logging.getLogger(
+                    "mcp_doc_retriever.downloader.workflow"
+                ),
+            )
         )
-        print(f"Check content in: {os.path.join(os.path.abspath(args.output_dir), 'content')}")
-        print("--- Done ---")
+        logger_cli.info(
+            f"Download workflow for '{download_id}' completed successfully."
+        )
 
-    except KeyboardInterrupt:
-        print("\nDownload interrupted by user.", file=sys.stderr)
-        logger.warning("Download process interrupted by KeyboardInterrupt.")
-        sys.exit(1)
+    except (ValueError, RuntimeError, FileNotFoundError) as e:
+        logger_cli.error(
+            f"Download workflow failed: {e}", exc_info=log_level <= logging.DEBUG
+        )
+        raise typer.Exit(code=1)
     except Exception as e:
-        print(f"\nAn unexpected error occurred during the download: {e}", file=sys.stderr)
-        logger.critical("Unhandled exception in CLI download execution.", exc_info=True)
-        sys.exit(1)
+        logger_cli.error(
+            f"Unexpected error during download workflow: {e}", exc_info=True
+        )
+        raise typer.Exit(code=1)
+    # No finally needed here for executor, managed globally if script exits
 
-# Minimal usage function
-def usage_example():
-    """
-    Minimal example of invoking the CLI programmatically.
-    """
-    import sys
-    sys.argv = [
-        "cli.py",
-        "--url", "https://docs.python.org/3/",
-        "--depth", "0",
-        "--output-dir", "./tests/outputs",
-        "--download-id", "cli_test_run",
-        "--force"
-    ]
-    main()
 
+# --- Add Search Command (Example Placeholder) ---
+@app.command(
+    "search", help="Search previously downloaded documentation (Not implemented yet)."
+)
+def search_command(
+    download_id: str = typer.Argument(..., help="ID of the download batch to search."),
+    query: List[str] = typer.Option(
+        ..., "--query", "-q", help="Keywords or terms to search for."
+    ),
+    # Add other search options as needed
+):
+    """Placeholder for search functionality via CLI."""
+    logger_cli.info(f"Search command called for ID: {download_id} with query: {query}")
+    print(
+        f"Search functionality for '{download_id}' with query '{query}' is not yet implemented in the CLI."
+    )
+    print("You can use the API endpoint POST /search.")
+    # Example:
+    # try:
+    #     from .searcher.searcher import perform_search
+    #     base_dir_path = Path(config.DOWNLOAD_BASE_DIR).resolve() # Get from config
+    #     results = perform_search(
+    #          download_id=download_id, scan_keywords=query, selector="p", base_dir=base_dir_path
+    #     )
+    #     print(f"Found {len(results)} basic results:")
+    #     # Print results...
+    # except ImportError:
+    #     print("Search module not found.")
+    # except Exception as e:
+    #     print(f"Error during search: {e}")
+
+
+# --- Main Execution Guard ---
+# Includes graceful shutdown for the global executor
 if __name__ == "__main__":
-    main()
+    try:
+        app()
+    finally:
+        # Ensure executor is shut down when CLI finishes/exits
+        logger_cli.debug("Shutting down CLI thread pool executor.")
+        cli_executor.shutdown(wait=True)  # Wait for sync tasks
+        logger_cli.debug("CLI executor shutdown complete.")

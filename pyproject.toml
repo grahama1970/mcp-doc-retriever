@@ -19,6 +19,7 @@ dependencies = [
     "pytest>=8.3.5",
     "pytest-asyncio>=0.26.0",
     "sse-starlette>=2.2.1",
+    "tqdm>=4.67.1",
 ]
 [project.optional-dependencies]
 dev = ["pytest", "ruff", "pytest-asyncio"]

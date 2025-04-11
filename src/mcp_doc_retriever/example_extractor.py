@@ -20,14 +20,14 @@ Expected output:
 
 """
 import os
-import json
+# import json
 import logging
 from typing import Optional, List
 from mcp_doc_retriever.utils import (
     extract_content_blocks_from_html,
     extract_content_blocks_from_markdown,
 )
-from mcp_doc_retriever.models import ContentBlock
+# from mcp_doc_retriever.models import ContentBlock
 
 logger = logging.getLogger(__name__)
 

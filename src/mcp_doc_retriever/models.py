@@ -1,325 +1,415 @@
 """
 Pydantic models for MCP Document Retriever.
 
-Includes models for download, search, and status requests, as well as conditional validation for DocDownloadRequest.
+Defines data structures for:
+- Indexing downloaded content (`IndexRecord`, `ContentBlock`).
+- API request validation (`DocDownloadRequest`).
+- Search functionality (`SearchRequest`, `SearchResultItem`).
+- Task status tracking (`TaskStatus`).
+- Potentially older/alternative request models (`DownloadRequest`, `DownloadStatus`).
 
 Third-party documentation:
 - Pydantic: https://docs.pydantic.dev
 - Pydantic GitHub: https://github.com/pydantic/pydantic
-
-Sample input/output for DocDownloadRequest:
-
-    # Git source
-    DocDownloadRequest(
-        source_type='git',
-        repo_url='https://github.com/pydantic/pydantic',
-        doc_path='docs/',
-        download_id='abc123'
-    )
-    # Website source
-    DocDownloadRequest(
-        source_type='website',
-        url='https://docs.pydantic.dev',
-        download_id='def456',
-        depth=1
-    )
-    # Playwright source
-    DocDownloadRequest(
-        source_type='playwright',
-        url='https://example.com',
-        download_id='ghi789',
-        force=True
-    )
-
-Expected output: Valid model instance or pydantic.ValidationError if required fields are missing or invalid.
-
 """
 
-from pydantic import BaseModel, Field, validator, AnyHttpUrl, model_validator
-from typing import List, Optional, Literal, Dict, Any, Union
-from datetime import datetime, timedelta # Added datetime, timedelta for example
+from pydantic import BaseModel, Field, field_validator, AnyHttpUrl, model_validator
+from typing import List, Optional, Literal, Dict, Any
+from datetime import datetime  # Added datetime, timedelta for examples
 
-# --- Existing Models ---
+# ==============================================================================
+# Models used by the Downloader Workflow for Indexing
+# ==============================================================================
 
-class DownloadRequest(BaseModel):
-    """Request model for initiating a download"""
-    # Ensure url validation if desired (optional)
-    # url: AnyHttpUrl # Use this for stricter validation
-    url: str
-    force: bool = False
-    depth: int = Field(default=1, ge=0)
-    use_playwright: Optional[bool] = False
-    timeout: Optional[int] = None
-    max_file_size: Optional[int] = Field(
-        default=None, alias="max_size"
-    )
-
-    @validator("timeout", "max_file_size")
-    def check_positive_optional(cls, value):
-        if value is not None and value <= 0:
-            raise ValueError("Value must be positive if provided")
-        return value
-
-class DownloadStatus(BaseModel):
-    """Response model for download status AFTER initiation"""
-    status: Literal["started", "failed_validation"] # Renamed from "failed" which is ambiguous now
-    message: str
-    download_id: Optional[str] = None # download_id is None if validation fails early
-
-
-class SearchRequest(BaseModel):
-    """Request model for searching downloaded content"""
-    download_id: str
-    scan_keywords: List[str] = Field(..., min_items=1)
-    extract_selector: str
-    extract_keywords: Optional[List[str]] = None
-
-    @validator("extract_selector")
-    def check_selector_non_empty(cls, value):
-        if not value or not value.strip():
-            raise ValueError("extract_selector cannot be empty")
-        return value
-
-class SearchResultItem(BaseModel):
-    """
-    Model for individual search results.
-
-    - original_url: Source URL of the result.
-    - extracted_content: The matched content snippet (for backward compatibility).
-    - selector_matched: The CSS selector used for extraction.
-    - content_block: (Optional) Rich metadata about the matched block (code, json, or text).
-    - code_block_score: (Optional) Relevance score for code block matches.
-    - json_match_info: (Optional) Details about JSON match (keys/values/structure).
-    - search_context: (Optional) Context of the match ("code", "json", "text").
-    """
-    original_url: str
-    extracted_content: str
-    selector_matched: str
-    content_block: Optional["ContentBlock"] = None
-    code_block_score: Optional[float] = None
-    json_match_info: Optional[dict] = None
-    search_context: Optional[str] = None
 
 class ContentBlock(BaseModel):
     """
     Represents a block of extracted content (code, json, or text) with metadata.
-    - type: "code", "json", or "text"
-    - content: The extracted content string
-    - language: Programming language (if applicable, e.g., "python", "json")
-    - block_type: Source block type (e.g., "pre", "code", "markdown_fence")
-    - start_line, end_line: Line numbers in the source document (if available)
-    - source_url: URL of the source document (if available)
-    - metadata: Additional metadata (e.g., parsed_json, selector, etc.)
+    Used within IndexRecord.
+
+    Attributes:
+        type: "code", "json", or "text".
+        content: The extracted content string.
+        language: Programming language (if applicable, e.g., "python", "json").
+        block_type: Source block type (e.g., "pre", "code", "markdown_fence").
+        start_line: Line number in the source document where the block starts (if available).
+        end_line: Line number in the source document where the block ends (if available).
+        source_url: URL of the source document.
+        metadata: Additional metadata (e.g., parsed_json, selector, etc.).
     """
+
     type: Literal["code", "json", "text"]
     content: str
     language: Optional[str] = None
     block_type: Optional[str] = None
     start_line: Optional[int] = None
     end_line: Optional[int] = None
-    source_url: Optional[str] = None
+    source_url: Optional[str] = (
+        None  # Use str, AnyHttpUrl might be too strict if derived internally
+    )
     metadata: Optional[Dict[str, Any]] = None
 
+
 class IndexRecord(BaseModel):
-    """Internal model for tracking download attempts and results in the index file.
-    
-    content_blocks: Optional[List[ContentBlock]]
-        List of extracted content blocks (code, json, text) with metadata.
-        (For backward compatibility, code_snippets is still accepted but deprecated.)
     """
+    Internal model for tracking download attempts and results in the index file (.jsonl).
+    This is the primary output record generated by the web_downloader.
+
+    Attributes:
+        original_url: The URL as initially requested or found.
+        canonical_url: The canonical version of the URL after normalization/redirects.
+        local_path: Filesystem path where the content was saved (if successful). String for flexibility.
+        content_md5: MD5 hash of the downloaded content (if calculated).
+        fetch_status: Outcome of the fetch attempt. Includes specific failure reasons.
+        http_status: HTTP status code received from the server (if applicable).
+        error_message: Description of the error if fetch_status indicates failure.
+        content_blocks: List of extracted content blocks (code, json, text) found on the page.
+        code_snippets: Deprecated field for backward compatibility, prefer content_blocks.
+    """
+
     original_url: str
     canonical_url: str
-    local_path: str
+    local_path: (
+        str  # Store as string, Path object might not serialize well directly to JSONL
+    )
     content_md5: Optional[str] = None
     fetch_status: Literal[
-        "success", "failed_request", "failed_robotstxt", "failed_paywall", "skipped"
+        "success",
+        "failed_request",
+        "failed_robotstxt",
+        "failed_paywall",
+        "failed_internal",
+        "failed_precheck",
+        "failed_ssrf",
+        "failed_setup",
+        "skipped",
+        "skipped_domain",
+        "failed_generic",  # Added more specific statuses
     ]
     http_status: Optional[int] = None
     error_message: Optional[str] = None
     content_blocks: Optional[List[ContentBlock]] = None
-    code_snippets: Optional[list[dict]] = None  # Deprecated, for backward compatibility
+    code_snippets: Optional[list[dict]] = Field(
+        None, description="Deprecated, use content_blocks"
+    )
 
-# --- NEW Model for Task Status ---
 
-class TaskStatus(BaseModel):
-    """Response model for querying the status of a background download task."""
-    status: Literal["pending", "running", "completed", "failed"]
-    message: Optional[str] = None # Optional message for progress or final status
-    start_time: Optional[datetime] = None
-    end_time: Optional[datetime] = None
-    error_details: Optional[str] = None # Store error details if failed
+# ==============================================================================
+# Models potentially used by an API Layer (e.g., FastAPI)
+# ==============================================================================
+
+
 class DocDownloadRequest(BaseModel):
     """
-    Request model for the /download API endpoint.
+    Defines the expected request body for an API endpoint that triggers a download.
+    Validates conditional requirements based on source_type. Not used directly by the CLI.
 
-    - source_type: Literal['git', 'website', 'playwright']
-    - If source_type == 'git': require repo_url (valid URL) and doc_path (relative path)
-    - If source_type in ['website', 'playwright']: require url (valid URL)
-    - download_id: str (required)
-    - depth: int (optional, for website/playwright)
-    - force: bool (optional)
+    Attributes:
+        source_type: The type of source ('git', 'website', 'playwright').
+        repo_url: Required if source_type is 'git'.
+        doc_path: Required if source_type is 'git'. Relative path within the repo.
+        url: Required if source_type is 'website' or 'playwright'.
+        download_id: A unique identifier provided by the client for this download task.
+        depth: Max crawl depth for 'website'/'playwright'.
+        force: Whether to overwrite existing data.
     """
-    source_type: Literal['git', 'website', 'playwright']
+
+    source_type: Literal["git", "website", "playwright"]
     # Git fields
     repo_url: Optional[AnyHttpUrl] = None
     doc_path: Optional[str] = None
     # Website/Playwright fields
     url: Optional[AnyHttpUrl] = None
     # Common fields
-    download_id: str
-    depth: Optional[int] = None
-    force: Optional[bool] = None
+    download_id: str = Field(
+        ..., description="Client-provided unique ID for the download task"
+    )
+    depth: Optional[int] = Field(
+        None, ge=0, description="Crawling depth for website/playwright"
+    )
+    force: Optional[bool] = Field(None, description="Overwrite existing download data")
 
     @model_validator(mode="after")
     def check_conditional_fields(self):
         st = self.source_type
-        if st == 'git':
+        if st == "git":
+            if self.url or self.depth is not None:
+                raise ValueError(
+                    "url and depth are not applicable when source_type is 'git'"
+                )
             if not self.repo_url:
                 raise ValueError("repo_url is required when source_type is 'git'")
-            if not self.doc_path:
+            if (
+                self.doc_path is None
+            ):  # Allow empty string for root? No, require something or make optional? Required for now.
                 raise ValueError("doc_path is required when source_type is 'git'")
-        elif st in ('website', 'playwright'):
+        elif st in ("website", "playwright"):
+            if self.repo_url or self.doc_path is not None:
+                raise ValueError(
+                    "repo_url and doc_path are not applicable when source_type is 'website' or 'playwright'"
+                )
             if not self.url:
-                raise ValueError("url is required when source_type is 'website' or 'playwright'")
-        else:
-            raise ValueError("Invalid source_type")
+                raise ValueError(
+                    "url is required when source_type is 'website' or 'playwright'"
+                )
+            if (
+                self.depth is None
+            ):  # Default depth if not provided? Or require? API decision. Make optional here.
+                self.depth = 5  # Example default if API doesn't set one
+        # No need for else, Literal validation handles invalid source_type
         return self
 
     class Config:
-        schema_extra = {
+        # Example for OpenAPI documentation / testing
+        json_schema_extra = {
             "examples": [
                 {
-                    "source_type": "git",
-                    "repo_url": "https://github.com/pydantic/pydantic",
-                    "doc_path": "docs/",
-                    "download_id": "abc123"
+                    "summary": "Git Example",
+                    "value": {
+                        "source_type": "git",
+                        "repo_url": "https://github.com/pydantic/pydantic",
+                        "doc_path": "docs/",
+                        "download_id": "pydantic_git_docs",
+                    },
                 },
                 {
-                    "source_type": "website",
-                    "url": "https://docs.pydantic.dev",
-                    "download_id": "def456",
-                    "depth": 1
+                    "summary": "Website Example",
+                    "value": {
+                        "source_type": "website",
+                        "url": "https://docs.pydantic.dev/latest/",
+                        "download_id": "pydantic_web_docs",
+                        "depth": 2,
+                        "force": False,
+                    },
                 },
                 {
-                    "source_type": "playwright",
-                    "url": "https://example.com",
-                    "download_id": "ghi789",
-                    "force": True
-                }
+                    "summary": "Playwright Example",
+                    "value": {
+                        "source_type": "playwright",
+                        "url": "https://playwright.dev/python/",
+                        "download_id": "playwright_web_docs",
+                        "depth": 0,  # Fetch only start page
+                    },
+                },
             ]
         }
 
 
+class TaskStatus(BaseModel):
+    """
+    Response model for querying the status of a background download task via an API.
+    Not directly used by the synchronous CLI workflow.
+
+    Attributes:
+        status: Current state of the task ('pending', 'running', 'completed', 'failed').
+        message: Optional human-readable status message or progress update.
+        start_time: When the task began processing.
+        end_time: When the task finished (successfully or unsuccessfully).
+        error_details: Detailed error information if the task failed.
+    """
+
+    status: Literal["pending", "running", "completed", "failed"]
+    message: Optional[str] = None
+    start_time: Optional[datetime] = None
+    end_time: Optional[datetime] = None
+    error_details: Optional[str] = None  # Store traceback or error summary if failed
+
+
+# ==============================================================================
+# Models potentially used for Search Functionality
+# ==============================================================================
+
+
+class SearchRequest(BaseModel):
+    """
+    Request model for searching downloaded content (likely via an API).
+
+    Attributes:
+        download_id: Identifier of the download batch to search within.
+        scan_keywords: List of keywords to initially filter files/pages.
+        extract_selector: CSS selector used to extract relevant content blocks.
+        extract_keywords: Optional list of keywords to further filter extracted blocks.
+    """
+
+    download_id: str
+    scan_keywords: List[str] = Field(..., min_length=1)
+    extract_selector: str
+    extract_keywords: Optional[List[str]] = None
+
+    @field_validator("extract_selector")
+    def check_selector_non_empty(cls, value):
+        if not value or not value.strip():
+            raise ValueError("extract_selector cannot be empty")
+        return value
+
+
+class SearchResultItem(BaseModel):
+    """
+    Represents a single search result item returned by the search functionality.
+
+    Attributes:
+        original_url: Source URL where the match was found.
+        extracted_content: The matched content snippet (potentially deprecated if using content_block).
+        selector_matched: The CSS selector that matched this block.
+        content_block: Detailed information about the matched block (preferred over extracted_content).
+        code_block_score: Relevance score if the match is within a code block.
+        json_match_info: Details about the JSON match (keys/values/structure).
+        search_context: Context of the match ('code', 'json', 'text').
+    """
+
+    original_url: str
+    extracted_content: (
+        str  # Keep for compatibility or simplify if content_block is always used
+    )
+    selector_matched: str
+    content_block: Optional[ContentBlock] = None  # Preferred way to represent the match
+    code_block_score: Optional[float] = None
+    json_match_info: Optional[dict] = None
+    search_context: Optional[str] = None
+
+
+# ==============================================================================
+# Older / Alternative Models (Potentially Deprecated or for specific use cases)
+# ==============================================================================
+
+
+class DownloadRequest(BaseModel):
+    """
+    Older/Alternative request model for initiating a download.
+    Consider using DocDownloadRequest for API interactions. Not used by CLI.
+
+    Attributes:
+        url: The URL to download. Stricter validation via AnyHttpUrl is possible.
+        force: Overwrite existing files.
+        depth: Max crawl depth.
+        use_playwright: Flag to force Playwright usage.
+        timeout: Request timeout.
+        max_file_size: Max size for downloaded files.
+    """
+
+    url: str  # Use AnyHttpUrl for stricter validation if needed for this specific model's use case
+    force: bool = False
+    depth: int = Field(default=1, ge=0)
+    use_playwright: Optional[bool] = False
+    timeout: Optional[int] = Field(None, gt=0)  # Ensure positive if provided
+    max_file_size: Optional[int] = Field(
+        None, alias="max_size", gt=0
+    )  # Ensure positive if provided
+
+    # Note: Pydantic v2 handles gt=0 validation directly in Field
+
+
+class DownloadStatus(BaseModel):
+    """
+    Older/Alternative response model for download status after *initiating* a request.
+    Consider using TaskStatus for querying background task progress/results.
+
+    Attributes:
+        status: Outcome of the initial request validation/start attempt.
+        message: Human-readable message.
+        download_id: The ID assigned if the download started successfully.
+    """
+
+    status: Literal["started", "failed_validation"]
+    message: str
+    download_id: Optional[str] = None  # download_id is None if validation fails early
+
+
+# ==============================================================================
+# Testing / Verification Block
+# ==============================================================================
+
+# Keep the __main__ block for validating models when running this file directly
 if __name__ == "__main__":
     from pydantic import ValidationError
-    print("Testing DocDownloadRequest validation...")
 
-    # Valid git
-    try:
-        req = DocDownloadRequest(
-            source_type='git',
-            repo_url='https://github.com/pydantic/pydantic',
-            doc_path='docs/',
-            download_id='abc123'
-        )
-        print("Valid git:", req)
-    except ValidationError as e:
-        print("Git validation error:", e)
-
-    # Valid website
-    try:
-        req = DocDownloadRequest(
-            source_type='website',
-            url='https://docs.pydantic.dev',
-            download_id='def456',
-            depth=1
-        )
-        print("Valid website:", req)
-    except ValidationError as e:
-        print("Website validation error:", e)
-
-    # Valid playwright
-    try:
-        req = DocDownloadRequest(
-            source_type='playwright',
-            url='https://example.com',
-            download_id='ghi789',
-            force=True
-        )
-        print("Valid playwright:", req)
-    except ValidationError as e:
-        print("Playwright validation error:", e)
-
-    # Invalid: git missing repo_url
-    try:
-        req = DocDownloadRequest(
-            source_type='git',
-            doc_path='docs/',
-            download_id='fail1'
-        )
-    except ValidationError as e:
-        print("Expected error (git missing repo_url):", e)
-
-    # Invalid: website missing url
-    try:
-        req = DocDownloadRequest(
-            source_type='website',
-            download_id='fail2'
-        )
-    except ValidationError as e:
-        print("Expected error (website missing url):", e)
-
-# --- Example Usage (Optional - If running models.py directly) ---
-if __name__ == "__main__":
-    # Example verification for ContentBlock and IndexRecord
     print("--- Model Verification Start ---")
 
-    # ContentBlock example
+    print("\nTesting DocDownloadRequest validation...")
+    # Valid examples (as before)
+    try:
+        DocDownloadRequest(
+            source_type="git",
+            repo_url="https://github.com/pydantic/pydantic",
+            doc_path="docs/",
+            download_id="g1",
+        )
+        print("OK: Valid git")
+    except ValidationError as e:
+        print("FAIL: Valid git:", e)
+    try:
+        DocDownloadRequest(
+            source_type="website", url="https://docs.pydantic.dev", download_id="w1"
+        )
+        print("OK: Valid website (default depth)")
+    except ValidationError as e:
+        print("FAIL: Valid website:", e)
+    try:
+        DocDownloadRequest(
+            source_type="playwright",
+            url="https://example.com",
+            download_id="p1",
+            force=True,
+        )
+        print("OK: Valid playwright")
+    except ValidationError as e:
+        print("FAIL: Valid playwright:", e)
+
+    # Invalid examples (as before)
+    try:
+        DocDownloadRequest(source_type="git", doc_path="docs/", download_id="fail_g1")
+        print("FAIL: Git missing repo_url")
+    except ValidationError:
+        print("OK: Expected error (git missing repo_url)")
+    try:
+        DocDownloadRequest(
+            source_type="git", repo_url="https://github.com/p", download_id="fail_g2"
+        )
+        print("FAIL: Git missing doc_path")
+    except ValidationError:
+        print("OK: Expected error (git missing doc_path)")
+    try:
+        DocDownloadRequest(source_type="website", download_id="fail_w1")
+        print("FAIL: Website missing url")
+    except ValidationError:
+        print("OK: Expected error (website missing url)")
+    try:
+        DocDownloadRequest(
+            source_type="git",
+            url="https://example.com",
+            repo_url="https://github.com/p",
+            doc_path="d",
+            download_id="fail_mix1",
+        )
+        print("FAIL: Git with website field")
+    except ValidationError:
+        print("OK: Expected error (git with website field)")
+    try:
+        DocDownloadRequest(
+            source_type="website",
+            url="https://example.com",
+            repo_url="https://github.com/p",
+            download_id="fail_mix2",
+        )
+        print("FAIL: Website with git field")
+    except ValidationError:
+        print("OK: Expected error (website with git field)")
+
+    print("\nTesting IndexRecord and ContentBlock...")
     cb_code = ContentBlock(
-        type="code",
-        content="def foo():\n    return 42",
-        language="python",
-        block_type="pre",
-        start_line=10,
-        end_line=12,
-        source_url="https://example.com/page",
-        metadata={"selector": "pre.code-block"}
+        type="code", content="pass", language="python", source_url="http://a.com"
     )
-    print("\nContentBlock (code):")
-    print(cb_code.model_dump_json(indent=2) if hasattr(cb_code, "model_dump_json") else cb_code.json(indent=2))
-
     cb_json = ContentBlock(
-        type="json",
-        content='{"key": "value"}',
-        language="json",
-        block_type="markdown_fence",
-        start_line=20,
-        end_line=22,
-        source_url="https://example.com/page",
-        metadata={"parsed_json": {"key": "value"}}
+        type="json", content="{}", language="json", source_url="http://a.com"
     )
-    print("\nContentBlock (json):")
-    print(cb_json.model_dump_json(indent=2) if hasattr(cb_json, "model_dump_json") else cb_json.json(indent=2))
-
-    cb_text = ContentBlock(
-        type="text",
-        content="This is a paragraph of text.",
-        start_line=30,
-        end_line=30,
-        source_url="https://example.com/page"
-    )
-    print("\nContentBlock (text):")
-    print(cb_text.model_dump_json(indent=2) if hasattr(cb_text, "model_dump_json") else cb_text.json(indent=2))
-
-    # IndexRecord example
-    idx = IndexRecord(
-        original_url="https://example.com/page",
-        canonical_url="https://example.com/page",
-        local_path="/downloads/example.html",
+    idx_rec = IndexRecord(
+        original_url="http://a.com",
+        canonical_url="http://a.com",
+        local_path="/path/a.html",
         fetch_status="success",
-        content_blocks=[cb_code, cb_json, cb_text]
+        http_status=200,
+        content_blocks=[cb_code, cb_json],
     )
-    print("\nIndexRecord with content_blocks:")
-    print(idx.model_dump_json(indent=2) if hasattr(idx, "model_dump_json") else idx.json(indent=2))
+    print("OK: IndexRecord created:", idx_rec.model_dump(exclude_none=True))
 
     print("\n--- Model Verification End ---")

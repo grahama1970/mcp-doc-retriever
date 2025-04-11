@@ -1,24 +1,24 @@
-# File: src/mcp_doc_retriever/utils.py (Updated)
-
 """
 Module: utils.py
 
 Description:
 Provides shared, general-purpose utility functions for the MCP Document Retriever,
-including URL canonicalization, ID generation, security checks (SSRF), and basic
-keyword matching helpers used across different components like the downloader,
-searcher, and potentially an API layer.
+including URL canonicalization, ID generation, security checks, and basic
+keyword/content matching helpers used across different components like the
+downloader, searcher, and potentially an API layer.
 """
 
 import hashlib
 import ipaddress
+import json
 import logging
 import socket  # Keep for gethostbyname/getaddrinfo in SSRF check
-from typing import List, Optional
+from typing import List, Optional, Set, Tuple
 from urllib.parse import urlparse, urlunparse
 
-# Config will be imported inside the function that needs it (is_url_private_or_internal)
-# to handle both direct execution and module import scenarios.
+# Assuming config is importable for SSRF override flag
+from . import config
+
 logger = logging.getLogger(__name__)
 
 # --- Constants ---
@@ -128,14 +128,7 @@ def is_url_private_or_internal(url: str) -> bool:
             logger.debug(f"SSRF check: Blocked URL with no hostname: {url}")
             return True
 
-        # Import config here for SSRF override flag check
-        try:
-            from mcp_doc_retriever import config
-            allow_test_urls = getattr(config, "ALLOW_TEST_INTERNAL_URLS", False)
-        except ImportError:
-            # Fallback if run in a context where absolute import fails (shouldn't happen with __main__ setup)
-            logger.warning("Could not import config for SSRF check. Assuming default behavior (ALLOW_TEST_INTERNAL_URLS=False).")
-            allow_test_urls = False
+        allow_test_urls = getattr(config, "ALLOW_TEST_INTERNAL_URLS", False)
         if allow_test_urls:
             allowed_test_hosts = {
                 "host.docker.internal",
@@ -156,10 +149,8 @@ def is_url_private_or_internal(url: str) -> bool:
                         f"SSRF check: Allowed test IP: {resolved_ip} for {hostname}"
                     )
                     return False
-            except socket.gaierror:
-                pass  # Fall through if resolution fails
-            except ValueError:
-                pass  # Fall through if IP is invalid format
+            except (socket.gaierror, ValueError):
+                pass  # Fall through if resolution fails or IP not in test list
             except Exception as e:
                 logger.warning(
                     f"SSRF check: Unexpected error resolving {hostname} for test check: {e}"
@@ -174,10 +165,8 @@ def is_url_private_or_internal(url: str) -> bool:
 
         resolved_ips = []
         try:
-            # Use getaddrinfo for potentially resolving both IPv4 and IPv6
-            # Use socket.AF_UNSPEC to allow both families
             addr_info_list = socket.getaddrinfo(
-                hostname, parsed.port, family=socket.AF_UNSPEC, proto=socket.IPPROTO_TCP
+                hostname, parsed.port, proto=socket.IPPROTO_TCP
             )
             resolved_ips = list(set(info[4][0] for info in addr_info_list))
             if not resolved_ips:
@@ -239,41 +228,75 @@ def contains_all_keywords(text: Optional[str], keywords: List[str]) -> bool:
     """
     if not text or not keywords:
         return False
-    # Normalize keywords: lowercase and remove empty/whitespace-only strings
     lowered_keywords = [kw.lower() for kw in keywords if kw and kw.strip()]
     if not lowered_keywords:
-        return False  # No valid keywords to check
-    # Perform case-insensitive check
+        return False
     text_lower = text.lower()
     return all(keyword in text_lower for keyword in lowered_keywords)
 
 
-# --- Helper functions _is_json_like and _find_block_lines have been moved to searcher/helpers.py ---
+def _is_json_like(text: str) -> bool:
+    """Heuristic check if a string looks like it might be JSON."""
+    text = text.strip()
+    if text and (
+        (text.startswith("{") and text.endswith("}"))
+        or (text.startswith("[") and text.endswith("]"))
+    ):
+        try:
+            json.loads(text)
+            return True
+        except json.JSONDecodeError:
+            return False
+    return False
 
 
+def _find_block_lines(
+    block_text: str, source_lines: List[str], used_spans: Set[Tuple[int, int]]
+) -> Tuple[Optional[int], Optional[int]]:
+    """
+    Approximates the start and end line numbers of a text block within source lines.
+    Tries to find the first unused match. NOTE: Heuristic, may be inaccurate.
+
+    Args:
+        block_text: The text content of the block to find.
+        source_lines: List of strings representing the lines of the source document.
+        used_spans: Set of (start_line, end_line) tuples already assigned.
+
+    Returns:
+        Tuple (start_line, end_line), both 1-based, or (None, None).
+    """
+    # Normalize block text for comparison (strip whitespace from each line)
+    block_lines = [
+        line.strip() for line in block_text.strip().splitlines() if line.strip()
+    ]
+    if not block_lines:
+        return None, None
+
+    num_block_lines = len(block_lines)
+    num_source_lines = len(source_lines)
+
+    for i in range(num_source_lines - num_block_lines + 1):
+        current_span = (i, i + num_block_lines - 1)  # 0-based span
+        if current_span in used_spans:
+            continue
+
+        window_lines = source_lines[i : i + num_block_lines]
+        normalized_window = [line.strip() for line in window_lines]
+
+        if normalized_window == block_lines:
+            used_spans.add(current_span)
+            return i + 1, i + num_block_lines  # Return 1-based lines
+
+    return None, None  # No unused match found
+
+
+# --- Example Usage ---
 # --- Example Usage (if run directly) ---
 if __name__ == "__main__":
-    # --- Setup for direct execution ---
-    import sys
-    import os
-    import logging # Ensure logging is imported here too if used before setup
-
-    # Add the 'src' directory to sys.path to allow absolute imports
-    current_dir = os.path.dirname(os.path.abspath(__file__))
-    # Go up two levels from src/mcp_doc_retriever/utils.py to reach the project root
-    project_root = os.path.abspath(os.path.join(current_dir, "..", ".."))
-    src_dir = os.path.join(project_root, "src") # Explicitly point to src directory
-    if src_dir not in sys.path:
-        sys.path.insert(0, src_dir)
-        # print(f"Added {src_dir} to sys.path for direct execution.") # Optional debug print
-
-    # No need to re-import config here anymore, it's handled within the function.
-    # The sys.path modification above ensures the import inside is_url_private_or_internal works.
-    pass # Placeholder if no other setup needed here
-    # --- End Setup ---
+    import socket  # Keep socket import here for the SSRF test
 
     print("--- Top-Level Utility Function Examples ---")
-    # Ensure logging is configured *after* potential sys.exit
+    # Configure logging for example output visibility
     logging.basicConfig(level=logging.INFO, format="[%(levelname)s] %(message)s")
 
     # --- URL Canonicalization ---
@@ -290,12 +313,16 @@ if __name__ == "__main__":
     for url in urls_to_canon:
         try:
             canon_url = canonicalize_url(url)
+            # Example of using generate_download_id
             try:
-                dl_id = generate_download_id(url)
+                dl_id = generate_download_id(url)  # Or use canon_url if preferred
                 print(f"'{url}' -> Canon='{canon_url}', ID='{dl_id}'")
-            except ValueError as id_e:
+            except (
+                ValueError
+            ) as id_e:  # Catch potential ID generation error separately if needed
                 print(f"'{url}' -> Canon='{canon_url}', ID ERROR: {id_e}")
         except ValueError as e:
+            # Catch canonicalization errors
             print(f"'{url}' -> CANON ERROR: {e}")
 
     # --- SSRF Check ---
@@ -315,21 +342,28 @@ if __name__ == "__main__":
         "http://[fe80::1]/path",  # IPv6 link-local
         "http://internal.service.local",
         "http://service.internal",
+        # Add a known public IP if possible for testing False case reliably
     ]
+    # Try to add a known public IP for testing
     try:
+        # Resolve google.com's IP address
         google_ip = socket.gethostbyname("google.com")
         ssrf_urls_to_test.append(f"http://{google_ip}")
         print(f"(Using resolved google.com IP for testing: {google_ip})")
     except socket.gaierror as e:
+        # Catch specific DNS resolution error
         print(f"Warning: Could not resolve google.com for SSRF test: {e}")
     except Exception as e:
+        # Catch any other unexpected error during DNS lookup
         print(f"Warning: Unexpected error resolving google.com: {e}")
 
+    # Test each URL
     for url in ssrf_urls_to_test:
         try:
             is_internal = is_url_private_or_internal(url)
             print(f"'{url}' -> Internal/Private: {is_internal}")
         except Exception as e:
+            # Catch potential errors within the check function itself if not handled internally
             print(f"'{url}' -> ERROR during SSRF check: {e}")
 
     # --- Keyword Check ---
@@ -346,10 +380,12 @@ if __name__ == "__main__":
     )
     print(
         f"'{text_sample}' contains []: {contains_all_keywords(text_sample, [])}"
-    )  # False
+    )  # Should be False
     print(
         f"'{text_sample}' contains [' ']: {contains_all_keywords(text_sample, [' '])}"
-    )  # False
-    print(f"None contains ['test']: {contains_all_keywords(None, ['test'])}")  # False
+    )  # Should be False (empty keyword filtered)
+    print(
+        f"None contains ['test']: {contains_all_keywords(None, ['test'])}"
+    )  # Should be False
 
     print("\n--- Top-Level Utils Examples Finished ---")
