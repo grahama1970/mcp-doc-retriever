@@ -1,23 +1,121 @@
 [
   {
-    "_key": "uuid-placeholder-21",
-    "timestamp": "2025-04-11T13:56:39.227054Z",
-    "role": "Boomerang Mode",
-    "problem": "When defining new API request models with complex conditional validation (e.g., Pydantic models for endpoints), teams often miss key requirements or fail to enforce project module structure and verification rules.",
-    "solution": "Orchestrate the implementation by: 1) Proactively researching and delivering official documentation sources for the core library (e.g., Pydantic) to the Coder, 2) Instructing the Coder to use doc_download if needed, 3) Explicitly requiring the Coder to follow project module structure rules (description, doc links, sample input/output, minimal real-world usage block), and 4) Mandating standalone verification via the __main__ block. This ensures robust, future-proof models and consistent documentation.",
-    "keywords": [
-      "orchestration",
-      "planning",
-      "pydantic",
-      "conditional validation",
-      "request model",
-      "api",
-      "module structure",
-      "boomerang mode"
-    ],
-    "relevant_files": [
-      "src/mcp_doc_retriever/models.py",
-      "src/mcp_doc_retriever/docs/lessons_learned.json"
-    ]
+    "_key": "uuid-placeholder-1",
+    "timestamp": "2024-07-28T10:00:00Z",
+    "role": "Planner",
+    "severity": "High",
+    "task_context": "Task 4.3 (Dockerfile creation) - Planning for environment differences",
+    "problem": "What appeared to be a simple module (7-8 files) became complex due to insufficient upfront planning for production environment differences (e.g., uv in development vs production, system dependencies, permissions).",
+    "solution": "When planning tasks involving different environments (dev/prod): 1) Document environment-specific requirements in task.md upfront, 2) Include explicit validation steps for each environment, 3) Plan for environment-specific testing before implementation. This prevents late-stage complications and rework.",
+    "keywords": ["planning", "environment", "production", "development", "validation", "docker", "requirements", "planner"],
+    "relevant_files": ["task.md", "Dockerfile", "docker-compose.yml"],
+    "relevant_tools": ["docker", "uv"]
+  },
+  {
+    "_key": "uuid-placeholder-2",
+    "timestamp": "2024-07-28T10:05:00Z",
+    "role": "Planner",
+    "severity": "Critical",
+    "task_context": "Initial project setup (Task ), attempting Git actions (add, commit, tag)",
+    "problem": "Attempting `git add .`, `git commit`, or `git tag` failed with 'fatal: not a git repository'.",
+    "solution": "Ensure `git init` is executed successfully in the project root directory *before* attempting any other Git commands like add, commit, or tag during initial setup phases.",
+    "keywords": ["git", "init", "setup", "commit", "tag", "add", "repository", "planner"],
+    "relevant_files": [],
+    "relevant_tools": ["git"]
+  },
+  {
+    "_key": "uuid-placeholder-3",
+    "timestamp": "2024-07-28T10:10:00Z",
+    "role": "Planner",
+    "severity": "High",
+    "task_context": "Task 1.2/1.4/1.5 - Running commands installed via uv",
+    "problem": "Commands installed via `uv sync` (e.g., `uvicorn`) were not found in the PATH when executed directly in the shell, causing 'command not found' errors.",
+    "solution": "Use `uv run <command>` to execute commands that rely on packages installed within the `uv` virtual environment. This ensures the command runs within the correct context and can locate the necessary executables.",
+    "keywords": ["uv", "run", "sync", "dependencies", "execution", "environment", "path", "command not found", "planner", "uvicorn"],
+    "relevant_files": [],
+    "relevant_tools": ["uv", "uvicorn"]
+  },
+  {
+    "_key": "uuid-placeholder-4",
+    "timestamp": "2024-07-28T10:15:00Z",
+    "role": "Senior Coder",
+    "severity": "Medium",
+    "极简主义task_context": "Dependency management, adding/updating/removing packages",
+    "problem": "Forgetting to use `uv add` leads to inconsistent environments, missing lock updates, or broken virtualenvs.",
+    "solution": "Always use `uv add <package>` (or `uv pip` commands) to add, update, or remove dependencies. Never edit `pyproject.toml` manually or use `pip` directly.",
+    "keywords": ["uv", "dependency management", "add", "update", "remove", "pyproject.toml", "lockfile", "best practice", "senior-coder"],
+    "relevant_files": ["pyproject.toml", "uv.lock"],
+    "relevant_tools": ["uv"]
+  },
+  {
+    "_key": "uuid-placeholder-5",
+    "timestamp": "2024-07-28T10:20:00Z",
+    "role": "Senior Coder",
+    "severity": "Medium",
+    "task_context": "Encountering missing dependencies or ModuleNotFoundError during script execution or runtime",
+    "problem": "Reporting missing packages as errors instead of proactively fixing them immediately, causing unnecessary delays and user intervention.",
+    "solution": "When encountering missing dependencies (e.g., ModuleNotFoundError), immediately attempt to fix by running `uv add <package>` without waiting for user input. Then re-run the failing command or script to verify resolution.",
+    "keywords": ["dependency", "ModuleNotFoundError", "uv add", "proactive", "environment repair", "senior-coder", "debugging", "automation"],
+    "relevant_files": [],
+    "relevant_tools": ["uv"]
+  },
+  {
+    "_key": "uuid-placeholder-6",
+    "timestamp": "2024-07-28T10:25:00Z",
+    "role": "Hacker",
+    "severity": "High",
+    "task_context": "Security testing of downloader.py",
+    "problem": "Double-encoded path traversal (%252e%252e%252f) bypassed security checks",
+    "solution": "Added multiple URL decoding passes to handle nested encoding attempts",
+    "keywords": ["security", "path traversal", "encoding", "hacker"],
+    "relevant_files": ["src/mcp_doc_retriever/fetchers.py", "src/mcp_doc_retriever/utils.py"],
+    "relevant_tools": []
+  },
+  {
+    "_key": "uuid-placeholder-7",
+    "timestamp": "2024-07-28T10:30:00Z",
+    "role": "Hacker",
+    "severity": "Medium",
+    "task_context": "Security testing of downloader.py",
+    "problem": "Concurrent downloads to same file could cause corruption",
+    "solution": "Implemented simple file locking mechanism using .lock files",
+    "keywords": ["security", "concurrency", "locking", "hacker"],
+    "relevant_files": ["src/mcp_doc_retriever/fetchers.py"],
+    "relevant_tools": []
+  },
+  {
+    "_key": "uuid-placeholder-8",
+    "timestamp": "2024-07-28T10:35:00Z",
+    "role": "Hacker",
+    "severity": "Medium",
+    "task_context": "Security testing of downloader.py (Task 2.4)",
+    "problem": "Error messages could leak internal details about malformed responses",
+    "solution": "Standardized generic error messages that don't reveal implementation details",
+    "keywords": ["security", "error handling", "information leakage", "hacker"],
+    "relevant_files": ["src/mcp_doc_retriever/fetchers.py", "src/mcp_doc_retriever/downloader.py"],
+    "relevant_tools": []
+  },
+  {
+    "_key": "uuid-placeholder-9",
+      "timestamp": "2024-07-28T10:40:00Z",
+    "role": "Senior Coder",
+      "severity": "Medium",
+    "task_context": "Implementing concurrency control with asyncio.Semaphore",
+    "problem": "Race conditions occurred due to improper management of asyncio.Semaphore, particularly by not using async context managers. Multiple coroutines accessed shared resources concurrently, leading to data inconsistency.",
+    "solution": "Refactored code to use async context managers with asyncio.Semaphore to ensure proper acquisition and release of locks. Integrated pytest-asyncio to establish a robust asynchronous testing framework and enforced strict concurrency limits for security purposes. The race condition, exemplified by concurrent file writes, was resolved through these improvements.",
+    "keywords": ["asyncio", "semaphore", "async context manager", "pytest-asyncio", "concurrency", "race condition", "security"],
+    "relevant_files": [      "src/mcp_doc_retriever/downloader.py",       "src/mcp_doc_retriever/utils.py"],
+    "relevant_tools": []
+  },
+  {
+    "_key": "uuid-placeholder-10",
+    "timestamp": "2024-07-28T10:45:00Z",
+    "role": "Junior Coder",
+    "severity": "Medium",
+    "task_context": "Learned during replacement of unreliable tests with a CLI usage example and subsequent security hardening of the downloader module.",
+    "problem": "Directly running CLI scripts inside packages can cause import errors. Unsanitized CLI path arguments risk path traversal and arbitrary file writes.",
+    "solution": "Refactored CLI entry points to use `if __name__ == '__main__':` to prevent import errors. Sanitized path arguments to avoid path traversal and arbitrary file writes. Added tests to ensure security hardening.",
+    "keywords": ["cli", "path traversal", "security", "junior-coder"],
+    "relevant_files": ["src/mcp_doc_retriever/cli.py", "src/mcp_doc_retriever/fetchers.py"]
   }
 ]
