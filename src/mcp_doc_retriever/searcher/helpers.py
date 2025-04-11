@@ -17,7 +17,7 @@ from typing import List, Optional, Set, Tuple
 from urllib.parse import urlparse, urlunparse
 
 # Assuming config is importable for SSRF override flag
-from . import config
+from mcp_doc_retriever import config
 
 logger = logging.getLogger(__name__)
 
