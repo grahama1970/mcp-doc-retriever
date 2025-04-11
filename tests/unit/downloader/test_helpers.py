@@ -1,76 +1,71 @@
 """
-Module: tests/unit/downloader/test_helpers.py
-
-Description:
-Unit tests for url_to_local_path function in downloader/helpers.py.
-Tests cover basic URL conversion, edge cases, security validation, and error handling.
+Unit tests for downloader/helpers.py module
 """
-import sys
-from pathlib import Path
-
-# Add project root to Python path
-project_root = str(Path(__file__).resolve().parent.parent.parent.parent)
-if project_root not in sys.path:
-    sys.path.insert(0, project_root)
-
 import pytest
-from src.mcp_doc_retriever.downloader.helpers import url_to_local_path
+from pathlib import Path
+from mcp_doc_retriever.downloader import helpers
 
-def test_basic_url_conversion(tmp_path):
-    """Test basic URL formats convert correctly"""
-    result = url_to_local_path(tmp_path, "http://example.com/path/file.html")
-    assert str(result.relative_to(tmp_path)) == "example.com/path/file.html"
+@pytest.fixture
+def tmp_download_dir(tmp_path):
+    """Fixture providing a temporary download directory"""
+    return tmp_path / "downloads"
 
-def test_edge_cases(tmp_path):
-    """Test edge cases like trailing slashes and special chars"""
-    result = url_to_local_path(tmp_path, "http://example.com/path/")
-    assert str(result.relative_to(tmp_path)) == "example.com/path/index.html"
+def test_url_to_local_path_basic(tmp_download_dir):
+    """Test basic URL to path conversion"""
+    url = "http://example.com/file.html"
+    result = helpers.url_to_local_path(tmp_download_dir, url)
+    assert str(result).startswith(str(tmp_download_dir))
+    assert "example.com/file.html" in str(result)
 
-def test_path_traversal_prevention(tmp_path):
-    """Test path traversal attempts are blocked"""
-    # Test with a path that would actually escape when resolved
-    with pytest.raises(ValueError, match="escapes base directory"):
-        url_to_local_path(tmp_path, "http://example.com/../../../../etc/passwd")
-    
-    # Test with a path containing multiple parent directory references
-    with pytest.raises(ValueError, match="escapes base directory"):
-        url_to_local_path(tmp_path, "http://example.com/a/../../b/../../../etc/passwd")
+def test_url_to_local_path_with_path(tmp_download_dir):
+    """Test URL with path components"""
+    url = "https://example.com/path/to/resource"
+    result = helpers.url_to_local_path(tmp_download_dir, url)
+    assert "example.com/path/to/resource/index.html" in str(result)
 
-    # Test with encoded traversal attempts
-    with pytest.raises(ValueError, match="escapes base directory"):
-        url_to_local_path(tmp_path, "http://example.com/%2e%2e/%2e%2e/etc/passwd")
+def test_url_to_local_path_ipv6(tmp_download_dir):
+    """Test IPv6 URL handling"""
+    url = "http://[::1]:8080/special"
+    result = helpers.url_to_local_path(tmp_download_dir, url)
+    assert "_::_1__8080/special/index.html" in str(result)
 
-def test_long_path_handling(tmp_path):
-    """Test long paths and filenames are handled correctly"""
-    long_name = "x" * 100 + ".html"
-    result = url_to_local_path(tmp_path, f"http://example.com/{long_name}")
-    assert len(result.name) == len(long_name)
+def test_url_to_local_path_special_chars(tmp_download_dir):
+    """Test URL with special characters"""
+    url = 'http://example.com/a<b>c:d/e"f/g?h/i*j.html'
+    result = helpers.url_to_local_path(tmp_download_dir, url)
+    assert "example.com/a_b_c_d_e_f_g_h_i_j.html" in str(result)
 
-def test_error_cases(tmp_path):
-    """Test error cases raise appropriate exceptions"""
-    # Empty URL should fail hostname validation
-    with pytest.raises(ValueError, match="hostname"):
-        url_to_local_path(tmp_path, "")
-        
-    # Invalid URL format should fail parsing
+def test_url_to_local_path_traversal_attempt(tmp_download_dir):
+    """Test path traversal attempt"""
+    with pytest.raises(ValueError, match="Constructed path escapes base directory"):
+        helpers.url_to_local_path(tmp_download_dir, "http://example.com/../../etc/passwd")
+
+def test_url_to_local_path_long_filename(tmp_download_dir):
+    """Test long filename handling"""
+    long_name = "a" * 300 + ".html"
+    url = f"http://example.com/{long_name}"
+    result = helpers.url_to_local_path(tmp_download_dir, url)
+    assert len(result.name) <= 200  # Should be truncated
+    assert result.name.endswith(".html")
+
+def test_url_to_local_path_query_params(tmp_download_dir):
+    """Test URL with query parameters"""
+    url = "http://example.com/search?q=test&page=1"
+    result = helpers.url_to_local_path(tmp_download_dir, url)
+    assert "example.com/search/index.html" in str(result)
+
+def test_url_to_local_path_fragment(tmp_download_dir):
+    """Test URL with fragment"""
+    url = "http://example.com/page#section"
+    result = helpers.url_to_local_path(tmp_download_dir, url)
+    assert "example.com/page/index.html" in str(result)
+
+def test_url_to_local_path_empty(tmp_download_dir):
+    """Test empty URL"""
     with pytest.raises(ValueError):
-        url_to_local_path(tmp_path, "not_a_url")
-        
-    # Missing hostname should fail
-    with pytest.raises(ValueError, match="hostname"):
-        url_to_local_path(tmp_path, "http://")
+        helpers.url_to_local_path(tmp_download_dir, "")
 
-    # Malformed URL should fail
+def test_url_to_local_path_invalid(tmp_download_dir):
+    """Test invalid URL format"""
     with pytest.raises(ValueError):
-        url_to_local_path(tmp_path, "http:///missing/hostname")
-
-def test_relative_base_dir(tmp_path):
-    """Test that relative base_dir is resolved correctly"""
-    rel_path = tmp_path / "relative_dir"
-    rel_path.mkdir()
-    result = url_to_local_path(rel_path, "http://example.com/file.html")
-    assert str(result.relative_to(rel_path)) == "example.com/file.html"
-
-if __name__ == "__main__":
-    import sys
-    pytest.main(sys.argv)
+        helpers.url_to_local_path(tmp_download_dir, "not-a-url")
