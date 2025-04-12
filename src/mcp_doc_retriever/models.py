@@ -41,7 +41,14 @@ Output (JSON String):
   }
 """
 
-from pydantic import BaseModel, Field, field_validator, AnyHttpUrl, model_validator
+from pydantic import (
+    BaseModel, 
+    Field, 
+    field_validator, 
+    AnyHttpUrl, 
+    model_validator, 
+    ConfigDict
+)
 from typing import List, Optional, Literal, Dict, Any
 from datetime import datetime  # Added datetime, timedelta for examples
 
@@ -131,15 +138,7 @@ class DocDownloadRequest(BaseModel):
     """
     Defines the expected request body for an API endpoint that triggers a download.
     Validates conditional requirements based on source_type. Not used directly by the CLI.
-
-    Attributes:
-        source_type: The type of source ('git', 'website', 'playwright').
-        repo_url: Required if source_type is 'git'.
-        doc_path: Required if source_type is 'git'. Relative path within the repo.
-        url: Required if source_type is 'website' or 'playwright'.
-        download_id: A unique identifier provided by the client for this download task.
-        depth: Max crawl depth for 'website'/'playwright'.
-        force: Whether to overwrite existing data.
+    # ... (attributes) ...
     """
 
     source_type: Literal["git", "website", "playwright"]
@@ -167,9 +166,7 @@ class DocDownloadRequest(BaseModel):
                 )
             if not self.repo_url:
                 raise ValueError("repo_url is required when source_type is 'git'")
-            if (
-                self.doc_path is None
-            ):  # Allow empty string for root? No, require something or make optional? Required for now.
+            if self.doc_path is None:
                 raise ValueError("doc_path is required when source_type is 'git'")
         elif st in ("website", "playwright"):
             if self.repo_url or self.doc_path is not None:
@@ -180,16 +177,13 @@ class DocDownloadRequest(BaseModel):
                 raise ValueError(
                     "url is required when source_type is 'website' or 'playwright'"
                 )
-            if (
-                self.depth is None
-            ):  # Default depth if not provided? Or require? API decision. Make optional here.
-                self.depth = 5  # Example default if API doesn't set one
-        # No need for else, Literal validation handles invalid source_type
+            if self.depth is None:
+                self.depth = 5
         return self
 
-    class Config:
-        # Example for OpenAPI documentation / testing
-        json_schema_extra = {
+    # --- *** REPLACED class Config: with model_config = ConfigDict(...) *** ---
+    model_config = ConfigDict(
+        json_schema_extra={
             "examples": [
                 {
                     "summary": "Git Example",
@@ -216,12 +210,12 @@ class DocDownloadRequest(BaseModel):
                         "source_type": "playwright",
                         "url": "https://playwright.dev/python/",
                         "download_id": "playwright_web_docs",
-                        "depth": 0,  # Fetch only start page
+                        "depth": 0,
                     },
                 },
             ]
         }
-
+    )
 
 class TaskStatus(BaseModel):
     """
@@ -254,15 +248,16 @@ class SearchRequest(BaseModel):
 
     Attributes:
         download_id: Identifier of the download batch to search within.
-        scan_keywords: List of keywords to initially filter files/pages.
-        extract_selector: CSS selector used to extract relevant content blocks.
+        scan_keywords: List of keywords to initially filter files/pages (at least one required).
+        extract_selector: CSS selector used to extract relevant content blocks (required, non-empty).
         extract_keywords: Optional list of keywords to further filter extracted blocks.
+        limit: Optional maximum number of results to return.
     """
-
     download_id: str
     scan_keywords: List[str] = Field(..., min_length=1)
     extract_selector: str
     extract_keywords: Optional[List[str]] = None
+    limit: Optional[int] = Field(10, gt=0) # <-- ADDED THIS LINE (default 10, must be > 0)
 
     @field_validator("extract_selector")
     def check_selector_non_empty(cls, value):
@@ -270,31 +265,20 @@ class SearchRequest(BaseModel):
             raise ValueError("extract_selector cannot be empty")
         return value
 
-
 class SearchResultItem(BaseModel):
     """
     Represents a single search result item returned by the search functionality.
-
-    Attributes:
-        original_url: Source URL where the match was found.
-        extracted_content: The matched content snippet (potentially deprecated if using content_block).
-        selector_matched: The CSS selector that matched this block.
-        content_block: Detailed information about the matched block (preferred over extracted_content).
-        code_block_score: Relevance score if the match is within a code block.
-        json_match_info: Details about the JSON match (keys/values/structure).
-        search_context: Context of the match ('code', 'json', 'text').
     """
-
     original_url: str
-    extracted_content: (
-        str  # Keep for compatibility or simplify if content_block is always used
-    )
-    selector_matched: str
-    content_block: Optional[ContentBlock] = None  # Preferred way to represent the match
+    local_path: str # The absolute path to the local file
+    content_preview: str # A short preview of the matched content
+    match_details: str # The full extracted snippet that matched
+    selector_matched: str # The selector used for extraction
+    # Optional fields from advanced search (not populated by basic search)
+    content_block: Optional[ContentBlock] = None
     code_block_score: Optional[float] = None
     json_match_info: Optional[dict] = None
     search_context: Optional[str] = None
-
 
 # ==============================================================================
 # Older / Alternative Models (Potentially Deprecated or for specific use cases)

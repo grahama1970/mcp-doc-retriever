@@ -6,39 +6,31 @@ Module: basic_extractor.py
 Description:
 Handles the basic snippet extraction logic used by the primary `perform_search`.
 Supports extracting the <title> tag content or the filtered full text content of a file.
-Requires BeautifulSoup4 for title extraction.
+Requires BeautifulSoup4 for title extraction and CSS selection. # <-- Updated description
 """
 
 import logging
 from pathlib import Path
 from typing import List, Optional
-import re  # Keep re as it might be used indirectly or in future expansion
-import sys  # <-- CHANGE: Added import sys
+import re
+import sys
 
 # --- Corrected Imports ---
-# These imports should now work correctly after fixes in helpers.py and utils.py
 try:
-    from mcp_doc_retriever.searcher.helpers import extract_text_from_html_content
+    # No longer need extract_text_from_html_content directly here if selector is always used
     from mcp_doc_retriever.searcher.helpers import read_file_with_fallback
     from mcp_doc_retriever.utils import contains_all_keywords
 
     IMPORTS_OK = True
 except ImportError as e:
-    # Raise a more informative error if essential helpers/utils are missing during normal import
-    # This might happen if the package isn't installed correctly
     logging.error(
         f"Failed to import core dependencies: {e}. Ensure package is installed.",
         exc_info=True,
     )
     IMPORTS_OK = False
 
-    # Define dummy functions to avoid crashing later if used conditionally, but log error
     def read_file_with_fallback(p: Path) -> Optional[str]:
         logging.error("read_file_with_fallback not available")
-        return None
-
-    def extract_text_from_html_content(c: str) -> Optional[str]:
-        logging.error("extract_text_from_html_content not available")
         return None
 
     def contains_all_keywords(t: Optional[str], k: List[str]) -> bool:
@@ -46,34 +38,31 @@ except ImportError as e:
         return False
 
 
-# Use try-except for bs4 import to make it optional at runtime if needed
+# Use try-except for bs4 import
 try:
-    from bs4 import BeautifulSoup
+    from bs4 import BeautifulSoup, CSS
 
     BS4_AVAILABLE = True
 except ImportError:
     BS4_AVAILABLE = False
-    # No need for dummy class here if usage is guarded by BS4_AVAILABLE flag
 # --- End Corrected Imports ---
 
 logger = logging.getLogger(__name__)
 
 
-# --- Primary Function for this Module ---
-
-
+# --- Primary Function for this Module (Updated Logic) ---
 def extract_text_with_selector(
     file_path: Path,
     selector: str,
     extract_keywords: Optional[List[str]] = None,
 ) -> List[str]:
     """
-    Extracts text snippets from a file based on a CSS selector (basic implementation).
-    Handles 'title' specifically, otherwise extracts full filtered text content using helpers.
+    Extracts text snippets from an HTML file based on a CSS selector.
+    Requires BeautifulSoup4.
 
     Args:
-        file_path: Path object of the file to process.
-        selector: CSS selector (supports 'title', otherwise extracts full filtered text).
+        file_path: Path object of the HTML file to process.
+        selector: CSS selector to find elements. If empty or whitespace, returns empty list.
         extract_keywords: Optional keywords to filter the extracted snippets (all must match).
 
     Returns:
@@ -82,85 +71,104 @@ def extract_text_with_selector(
     if not IMPORTS_OK:
         logger.error("Cannot perform extraction, core dependencies failed to import.")
         return []
+    if not BS4_AVAILABLE:
+        logger.error(
+            "BeautifulSoup4 package required for CSS selector extraction, but not installed. Skipping extraction."
+        )
+        return []
 
-    content = read_file_with_fallback(file_path)  # Uses helper from helpers.py
+    selector_clean = selector.strip() if selector else ""
+    if not selector_clean:
+        logger.warning(f"Extraction skipped: Empty selector provided for {file_path}.")
+        return []
+
+    content = read_file_with_fallback(file_path)
     if content is None:
-        # read_file_with_fallback already logs warnings/errors
-        logger.debug(f"Basic extraction skipped: Cannot read file: {file_path}")
+        logger.debug(f"Extraction skipped: Cannot read file: {file_path}")
         return []
 
     extracted_snippets: List[str] = []
-    selector_lower = selector.strip().lower() if selector else ""
 
-    # Special handling for 'title' selector
-    if selector_lower == "title":
-        if not BS4_AVAILABLE:
-            logger.error(
-                "BeautifulSoup4 package required for 'title' selector, but not installed. Skipping title extraction."
-            )
-            return []  # Cannot extract title without BS4
+    try:
+        # Use lxml if available for performance, fallback to html.parser
+        parser_to_use = "html.parser"
         try:
-            # Use lxml if available for performance, fallback to html.parser
-            parser_to_use = "html.parser"  # Default
-            try:
-                # Check if lxml is importable without importing globally
-                import lxml
+            import lxml
 
-                parser_to_use = "lxml"
-            except ImportError:
-                pass  # Stick with html.parser
+            parser_to_use = "lxml"
+        except ImportError:
+            pass
 
-            soup = BeautifulSoup(content, parser_to_use)
+        soup = BeautifulSoup(content, parser_to_use)
 
-            title_tag = soup.title
-            if (
-                title_tag and title_tag.string
-            ):  # Check if tag exists and has string content
-                # .string gets the text if there's only one string child
-                # strip() removes leading/trailing whitespace
-                title_text = title_tag.string.strip()
-                if title_text:  # Only add non-empty titles
-                    extracted_snippets.append(title_text)
-            # If no title tag or empty title, extracted_snippets remains empty, which is correct.
-        except Exception as e:
-            # Catch potential errors during BS4 parsing or title access
+        # --- MODIFIED LOGIC: Use soup.select() for CSS selection ---
+        try:
+            # Validate the selector syntactically before using it (requires newer BS4 versions)
+            if hasattr(CSS, "validate") and callable(CSS.validate):
+                CSS.validate(selector_clean)
+
+            selected_elements = soup.select(selector_clean)
+            if not selected_elements:
+                logger.debug(
+                    f"Selector '{selector_clean}' found no elements in {file_path.name}"
+                )
+            else:
+                logger.debug(
+                    f"Selector '{selector_clean}' found {len(selected_elements)} elements in {file_path.name}"
+                )
+                for element in selected_elements:
+                    # Extract text, preserving structure within the element somewhat
+                    # Use separator=' ' to avoid words running together, strip removes outer whitespace
+                    element_text = element.get_text(separator=" ", strip=True)
+                    if element_text:  # Only add non-empty snippets
+                        extracted_snippets.append(element_text)
+
+        except NotImplementedError:
+            # Handle case where CSS.validate is not available (older BS4)
             logger.warning(
-                f"Error extracting <title> tag from {file_path}: {e}",
-                exc_info=False,  # Set True for debug stack trace
+                f"CSS selector validation not available. Proceeding without validation for '{selector_clean}'."
             )
-            # Treat as no title found, return empty for this specific case
-            return []
-    else:
-        # Fallback for other/empty selectors: Extract full text content using helper
-        # The helper function now includes title text due to the fix.
-        try:
-            # Calls function from searcher/helpers.py
-            full_text = extract_text_from_html_content(content)
-            if full_text:
-                # Append the single block of extracted text
-                extracted_snippets.append(full_text)
-            # If helper returns None (e.g., error or empty doc), snippets list remains empty.
-        except Exception as e:
-            # Error during the helper function execution itself
-            logger.error(
-                f"Error during full text extraction helper call for {file_path}: {e}",
-                exc_info=True,
+            # Attempt selection anyway
+            selected_elements = soup.select(selector_clean)
+            # (Duplicate the extraction logic from above or refactor)
+            if not selected_elements:
+                logger.debug(
+                    f"Selector '{selector_clean}' (unvalidated) found no elements in {file_path.name}"
+                )
+            else:
+                logger.debug(
+                    f"Selector '{selector_clean}' (unvalidated) found {len(selected_elements)} elements in {file_path.name}"
+                )
+                for element in selected_elements:
+                    element_text = element.get_text(separator=" ", strip=True)
+                    if element_text:
+                        extracted_snippets.append(element_text)
+        except Exception as select_err:  # Catch errors from soup.select (e.g., invalid selector syntax)
+            logger.warning(
+                f"Error applying CSS selector '{selector_clean}' to {file_path.name}: {select_err}. Skipping extraction for this file/selector.",
+                exc_info=False,  # Usually don't need full trace for invalid selectors
             )
-            return []  # Return empty if full text extraction fails
+            return []  # Return empty list if selector fails
 
-    # --- Filter results by extract_keywords if provided ---
+        # --- END MODIFIED LOGIC ---
+
+    except Exception as e:
+        # Catch potential errors during BS4 parsing
+        logger.warning(
+            f"Error parsing HTML or extracting text from {file_path}: {e}",
+            exc_info=False,
+        )
+        return []
+
+    # --- Filter results by extract_keywords if provided (remains the same) ---
     if extract_keywords:
-        # Normalize keywords: lowercase and remove empty/None
         lowered_extract_keywords = [
             kw.lower() for kw in extract_keywords if kw and kw.strip()
         ]
-        # If no valid keywords remain after filtering, no filtering is needed.
         if not lowered_extract_keywords:
             return extracted_snippets
 
-        # Filter the snippets based on the keywords using the utility function
         try:
-            # Calls function from utils.py
             filtered_snippets = [
                 snippet
                 for snippet in extracted_snippets
@@ -171,45 +179,34 @@ def extract_text_with_selector(
             )
             return filtered_snippets
         except Exception as e:
-            # Catch potential errors during the filtering process itself
             logger.error(
                 f"Error during keyword filtering for {file_path.name}: {e}",
                 exc_info=True,
             )
-            return []  # Return empty list on filtering error
+            return []
     else:
-        # No filtering keywords were provided, return all extracted snippets
         return extracted_snippets
 
 
-# --- Standalone Execution / Example ---
+# --- Standalone Execution / Example (Updated for Selector Tests) ---
 if __name__ == "__main__":
     import tempfile
     import shutil
-
-    # Ensure sys and Path are available if running standalone
     from pathlib import Path
 
-    # Setup logging for the example
     logging.basicConfig(level=logging.INFO, format="[%(levelname)-8s] %(message)s")
     logger.info("Running basic_extractor standalone test...")
 
-    # --- CHANGE: Setup sys.path and Imports ONLY for standalone execution ---
-    # This allows running `python src/mcp_doc_retriever/searcher/basic_extractor.py` directly
-    # Find the project root directory (adjust based on your structure)
-    # Assuming this script is in src/mcp_doc_retriever/searcher/basic_extractor.py
+    # --- Setup sys.path and Imports (Assume this part works as before) ---
     project_root_dir = Path(__file__).resolve().parent.parent.parent.parent
-    src_dir = project_root_dir / "src"  # Path to the 'src' directory
+    src_dir = project_root_dir / "src"
     if str(src_dir) not in sys.path:
         sys.path.insert(0, str(src_dir))
         print(f"DEBUG: Added {src_dir} to sys.path for standalone execution.")
 
-    # --- CHANGE: Re-import using absolute path for test context with error handling ---
     try:
-        # Re-import functions using the package path now that sys.path is set
         from mcp_doc_retriever.searcher.helpers import (
-            read_file_with_fallback as standalone_read_file,  # Use aliases to avoid name clashes if needed
-            extract_text_from_html_content as standalone_extract_html,
+            read_file_with_fallback as standalone_read_file,
         )
         from mcp_doc_retriever.utils import (
             contains_all_keywords as standalone_contains_kw,
@@ -217,211 +214,156 @@ if __name__ == "__main__":
 
         STANDALONE_IMPORTS_OK = True
         print("DEBUG: Successfully imported helpers/utils for standalone test.")
-        # Now, ensure the main function uses these potentially re-imported functions if necessary,
-        # or rely on the global imports if they succeeded. Safest is to potentially pass them?
-        # For simplicity here, we assume the global IMPORTS_OK reflects if these work.
         if not IMPORTS_OK:
-            print(
-                "ERROR: Initial global imports failed, standalone test may not reflect real behavior."
-            )
-            # Re-assign globals to the standalone versions IF the initial import failed
+            print("ERROR: Initial global imports failed, test may use standalone.")
             read_file_with_fallback = standalone_read_file
-            extract_text_from_html_content = standalone_extract_html
             contains_all_keywords = standalone_contains_kw
-            IMPORTS_OK = True  # Assume standalone imports worked for test execution
-
+            IMPORTS_OK = True
     except ImportError as e:
-        print(
-            f"ERROR: Could not import utils/helpers for standalone test via package path: {e}"
-        )
-        print(
-            "Ensure package is installed (`uv pip install -e .`) or PYTHONPATH is set correctly."
-        )
+        print(f"ERROR: Could not import utils/helpers for standalone test: {e}")
         STANDALONE_IMPORTS_OK = False
-        # Exit if essential functions can't be imported for the test
         sys.exit(1)
 
-    # Create a temporary directory for test files
+    # --- Test Setup ---
     with tempfile.TemporaryDirectory() as tmpdir:
         base_dir = Path(tmpdir)
-        logger.info(f"Test files will be created in temporary directory: {base_dir}")
+        logger.info(f"Test files will be created in: {base_dir}")
 
-        # Define test file contents
-        html_content_with_title = (
+        html_content = (
             "<!DOCTYPE html>\n"
-            "<html><head><meta charset='utf-8'><title> My Test Title </title></head>\n"
+            "<html><head><title> Test Title </title></head>\n"
             "<body>\n"
-            "  <p>Some paragraph text with <strong>keyword</strong>.</p>\n"
-            "  <script>console.log('ignored');</script>\n"
-            "  <p>Another paragraph.</p>\n"
+            "  <h1>Main Heading</h1>\n"
+            "  <p class='content'>First paragraph with <strong>keyword1</strong>.</p>\n"
+            "  <div class='data highlight'>Data Point <span>ALPHA</span></div>\n"
+            "  <p class='content'>Second paragraph with <em>keyword2</em>.</p>\n"
+            "  <div class='highlight'>Data Point <span>BETA</span></div>\n"
+            "  <p>Third paragraph, no class.</p>\n"
             "</body></html>"
         )
-        html_content_no_title = "<html><body><p>Just paragraph text here, another keyword.</p></body></html>"
-
-        # Write test files
-        html_with_title_path = base_dir / "title_test.html"
-        html_with_title_path.write_text(html_content_with_title, encoding="utf-8")
-
-        html_no_title_path = base_dir / "no_title_test.html"
-        html_no_title_path.write_text(html_content_no_title, encoding="utf-8")
-
-        logger.info(
-            f"Test files created: {html_with_title_path.name}, {html_no_title_path.name}"
-        )
+        html_file_path = base_dir / "selector_test.html"
+        html_file_path.write_text(html_content, encoding="utf-8")
+        logger.info(f"Test file created: {html_file_path.name}")
 
         # --- Test Cases ---
-        all_passed = True  # Track overall success
+        all_passed = True
 
-        print("\n--- Test Case 1: Selector 'title' (File with Title) ---")
+        print("\n--- Test Case 1: Selector 'title' ---")
         try:
-            results1 = extract_text_with_selector(html_with_title_path, "title")
+            results1 = extract_text_with_selector(html_file_path, "title")
             print(f"Found {len(results1)} snippets: {results1}")
+            # Note: BeautifulSoup might parse 'title' now via select, but keeping explicit check is fine
+            # Check if the explicit title logic still works or if select handles it.
+            # Assuming the original explicit title logic runs first if selector=='title'
+            # Let's adjust the test based on the *actual* code flow: 'title' is handled separately.
+            # Rerun the exact code logic mentally: if selector is 'title', it uses soup.title.string.
+            # soup = BeautifulSoup(html_content, 'html.parser') # Simulating
+            # assert soup.title.string.strip() == "Test Title"
+            # So, the expected result should still be ['Test Title']
             assert len(results1) == 1, "T1 Fail: Expected 1 title snippet"
-            assert results1[0] == "My Test Title", "T1 Fail: Incorrect title content"
+            assert results1[0] == "Test Title", "T1 Fail: Incorrect title content"
             print("Test Case 1 PASSED")
         except Exception as e:
             print(f"Test 1 FAILED: {e}")
             all_passed = False
 
-        print(
-            "\n--- Test Case 2: Selector 'title', Keywords ['test'] (File with Title) ---"
-        )
+        print("\n--- Test Case 2: Selector 'p.content' ---")
         try:
-            results2 = extract_text_with_selector(
-                html_with_title_path, "title", extract_keywords=["test"]
-            )
+            results2 = extract_text_with_selector(html_file_path, "p.content")
             print(f"Found {len(results2)} snippets: {results2}")
-            assert len(results2) == 1, "T2 Fail: Expected 1 filtered title snippet"
-            assert results2[0] == "My Test Title", (
-                "T2 Fail: Incorrect filtered title content"
+            assert len(results2) == 2, "T2 Fail: Expected 2 matching paragraphs"
+            assert "First paragraph with keyword1" in results2[0], (
+                "T2 Fail: Missing first p"
+            )
+            assert "Second paragraph with keyword2" in results2[1], (
+                "T2 Fail: Missing second p"
             )
             print("Test Case 2 PASSED")
         except Exception as e:
             print(f"Test 2 FAILED: {e}")
             all_passed = False
 
-        print(
-            "\n--- Test Case 3: Selector 'title', Keywords ['nothere'] (File with Title) ---"
-        )
+        print("\n--- Test Case 3: Selector '.highlight span' ---")
         try:
-            results3 = extract_text_with_selector(
-                html_with_title_path, "title", extract_keywords=["nothere"]
-            )
+            results3 = extract_text_with_selector(html_file_path, ".highlight span")
             print(f"Found {len(results3)} snippets: {results3}")
-            assert len(results3) == 0, (
-                "T3 Fail: Expected 0 snippets when keyword doesn't match title"
-            )
+            assert len(results3) == 2, "T3 Fail: Expected 2 matching spans"
+            assert results3[0] == "ALPHA", "T3 Fail: Incorrect span content 1"
+            assert results3[1] == "BETA", "T3 Fail: Incorrect span content 2"
             print("Test Case 3 PASSED")
         except Exception as e:
             print(f"Test 3 FAILED: {e}")
             all_passed = False
 
-        print(
-            "\n--- Test Case 4: Selector 'p' (uses full text extraction) (File with Title) ---"
-        )
-        # This now tests if the fixed helper includes the title in the full text
+        print("\n--- Test Case 4: Selector '.highlight', Keywords ['beta'] ---")
         try:
             results4 = extract_text_with_selector(
-                html_with_title_path, "p"
-            )  # 'p' triggers fallback to full text
-            print(f"Found {len(results4)} snippets (full text): {results4}")
-            assert len(results4) == 1, "T4 Fail: Expected 1 full text snippet"
-            # --- CHANGE: Assertion now expected to PASS ---
-            assert "My Test Title" in results4[0], (
-                "T4 Fail: Title missing in extracted full text"
+                html_file_path, ".highlight", extract_keywords=["beta"]
             )
-            assert "Some paragraph text with keyword" in results4[0], (
-                "T4 Fail: Paragraph text missing"
-            )
-            assert "Another paragraph" in results4[0], (
-                "T4 Fail: Second paragraph missing"
-            )
-            assert "console.log" not in results4[0], (
-                "T4 Fail: Script content was not removed"
+            print(f"Found {len(results4)} snippets: {results4}")
+            assert len(results4) == 1, "T4 Fail: Expected 1 filtered highlight div"
+            assert "Data Point BETA" in results4[0], (
+                "T4 Fail: Incorrect filtered content"
             )
             print("Test Case 4 PASSED")
         except Exception as e:
             print(f"Test 4 FAILED: {e}")
             all_passed = False
 
-        print(
-            "\n--- Test Case 5: Selector '' (full text), Keywords ['paragraph', 'keyword'] (File with Title) ---"
-        )
+        print("\n--- Test Case 5: Selector 'h1' ---")
         try:
-            results5 = extract_text_with_selector(
-                html_with_title_path, "", extract_keywords=["paragraph", "keyword"]
-            )
+            results5 = extract_text_with_selector(html_file_path, "h1")
             print(f"Found {len(results5)} snippets: {results5}")
-            assert len(results5) == 1, "T5 Fail: Expected 1 filtered full text snippet"
-            assert "paragraph" in results5[0].lower(), (
-                "T5 Fail: 'paragraph' keyword missing"
-            )
-            assert "keyword" in results5[0].lower(), (
-                "T5 Fail: 'keyword' keyword missing"
-            )
+            assert len(results5) == 1, "T5 Fail: Expected 1 heading"
+            assert results5[0] == "Main Heading", "T5 Fail: Incorrect heading content"
             print("Test Case 5 PASSED")
         except Exception as e:
             print(f"Test 5 FAILED: {e}")
             all_passed = False
 
-        print(
-            "\n--- Test Case 6: Selector '' (full text), Keywords ['another'] (File with Title) ---"
-        )
+        print("\n--- Test Case 6: Non-existent selector 'div.foo' ---")
         try:
-            # This keyword only appears in the second paragraph of the full text
-            results6 = extract_text_with_selector(
-                html_with_title_path, "", extract_keywords=["another"]
-            )
+            results6 = extract_text_with_selector(html_file_path, "div.foo")
             print(f"Found {len(results6)} snippets: {results6}")
-            assert len(results6) == 1, (
-                "T6 Fail: Expected 1 snippet containing 'another'"
+            assert len(results6) == 0, (
+                "T6 Fail: Expected 0 snippets for non-existent class"
             )
-            assert "Another paragraph" in results6[0], "T6 Fail: Content mismatch"
             print("Test Case 6 PASSED")
         except Exception as e:
             print(f"Test 6 FAILED: {e}")
             all_passed = False
 
-        print("\n--- Test Case 7: No Title file, Selector 'title' ---")
+        print("\n--- Test Case 7: Invalid selector 'p..content' ---")
         try:
-            results7 = extract_text_with_selector(html_no_title_path, "title")
+            results7 = extract_text_with_selector(html_file_path, "p..content")
             print(f"Found {len(results7)} snippets: {results7}")
+            # Should log a warning and return empty list
             assert len(results7) == 0, (
-                "T7 Fail: Expected 0 snippets when file has no title tag"
+                "T7 Fail: Expected 0 snippets for invalid selector"
             )
             print("Test Case 7 PASSED")
         except Exception as e:
             print(f"Test 7 FAILED: {e}")
-            all_passed = False
+            all_passed = False  # Should not raise an exception, but return []
 
-        print(
-            "\n--- Test Case 8: No Title file, Selector '' (full text), Keywords ['another keyword'] ---"
-        )
+        print("\n--- Test Case 8: Empty selector '' ---")
         try:
-            results8 = extract_text_with_selector(
-                html_no_title_path, "", extract_keywords=["another keyword"]
-            )
+            results8 = extract_text_with_selector(html_file_path, "")
             print(f"Found {len(results8)} snippets: {results8}")
-            assert len(results8) == 1, (
-                "T8 Fail: Expected 1 snippet from file without title"
-            )
-            assert "Just paragraph text here, another keyword." in results8[0], (
-                "T8 Fail: Content mismatch"
-            )
+            assert len(results8) == 0, "T8 Fail: Expected 0 snippets for empty selector"
             print("Test Case 8 PASSED")
         except Exception as e:
             print(f"Test 8 FAILED: {e}")
             all_passed = False
 
-    # Final Verdict
+    # --- Final Verdict ---
     print("\n------------------------------------")
     if all_passed:
-        print("✓ All basic_extractor tests passed successfully.") # Added print statement
+        print("✓ All basic_extractor tests passed successfully.")
         logger.info("✓ All basic_extractor tests passed successfully.")
     else:
-        print("✗ Some basic_extractor tests failed.") # Added print statement
+        print("✗ Some basic_extractor tests failed.")
         logger.error("✗ Some basic_extractor tests failed.")
-        # --- CHANGE: Exit with error code if tests fail ---
         sys.exit(1)
 
     logger.info("Basic extractor tests finished.")
