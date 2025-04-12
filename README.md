@@ -188,6 +188,25 @@ mcp-doc-retriever/
 *(This section remains largely the same)*
 
 ## 🧪 Testing
+### Note on Current Testing Strategy (Beta Phase)
+
+During the initial beta development phase of the MCP Document Retriever, while the
+core functionality and integrations are being stabilized, unit testing currently focuses
+on core utility modules (`test_utils.py`, `test_helpers.py`). For most other
+modules (especially within the `downloader` and `searcher` packages), functional
+verification currently relies heavily on their respective `if __name__ == '__main__':`
+standalone execution blocks (as mandated by Phase 0 of the testing plan).
+
+This strategy allows for rapid iteration and verification of core module logic
+independently. Once the overall MCP service functionality is stable and beta
+development is complete, a more comprehensive suite of unit and integration tests
+will be developed for all modules, replacing the reliance on standalone execution
+blocks for formal testing. The existing unit test files serve as initial templates
+for that future test suite.
+
+---
+
+
 
 *(This section remains largely the same, but test file paths might change if tests are also reorganized, e.g., `tests/downloader/test_git.py`, `tests/searcher/test_scanner.py`)*
 
