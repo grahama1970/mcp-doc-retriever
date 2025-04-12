@@ -21,6 +21,9 @@ dependencies = [
     "sse-starlette>=2.2.1",
     "tqdm>=4.67.1",
     "pathvalidate>=3.2.3",
+    "loguru>=0.7.3",
+    "markdown-it-py>=3.0.0",
+    "tree-sitter-language-pack>=0.7.1",
 ]
 [project.optional-dependencies]
 dev = ["pytest", "ruff", "pytest-asyncio"]

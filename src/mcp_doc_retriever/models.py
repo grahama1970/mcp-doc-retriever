@@ -6,6 +6,7 @@ Defines data structures for:
 - API request validation (`DocDownloadRequest`).
 - Search functionality (`SearchRequest`, `SearchResultItem`).
 - Task status tracking (`TaskStatus`).
+- Code extraction models (`ExtractedBlock`).
 - Potentially older/alternative request models (`DownloadRequest`, `DownloadStatus`).
 
 Third-party documentation:
@@ -50,7 +51,35 @@ from pydantic import (
     ConfigDict
 )
 from typing import List, Optional, Literal, Dict, Any
-from datetime import datetime  # Added datetime, timedelta for examples
+from datetime import datetime
+
+# ==============================================================================
+# Code Extraction Models
+# ==============================================================================
+
+class ExtractedBlock(BaseModel):
+    """
+    Represents a block of code extracted from source files using tree-sitter.
+    Used to track function/method/class definitions before converting to ContentBlock.
+    
+    Attributes:
+        type: The node type from tree-sitter (e.g., 'function_definition', 'class_definition')
+        name: The identifier name of the code block (e.g., function or class name)
+        content: The full source code content of the block
+        start_line: Line number where the block starts (1-based)
+        end_line: Line number where the block ends (1-based)
+    """
+    type: str = Field(description="Tree-sitter node type (e.g., 'function_definition')")
+    name: Optional[str] = Field(None, description="Identifier name (e.g., function/class name)")
+    content: str = Field(description="Full source code of the block")
+    start_line: int = Field(gt=0, description="Starting line number (1-based)")
+    end_line: int = Field(gt=0, description="Ending line number (1-based)")
+    
+    @field_validator('end_line')
+    def end_line_after_start(cls, v, info):
+        if v < info.data['start_line']:
+            raise ValueError('end_line must be >= start_line')
+        return v
 
 # ==============================================================================
 # Models used by the Downloader Workflow for Indexing
@@ -79,9 +108,7 @@ class ContentBlock(BaseModel):
     block_type: Optional[str] = None
     start_line: Optional[int] = None
     end_line: Optional[int] = None
-    source_url: Optional[str] = (
-        None  # Use str, AnyHttpUrl might be too strict if derived internally
-    )
+    source_url: Optional[str] = None  # Use str, AnyHttpUrl might be too strict if derived internally
     metadata: Optional[Dict[str, Any]] = None
 
 
@@ -104,9 +131,7 @@ class IndexRecord(BaseModel):
 
     original_url: str
     canonical_url: str
-    local_path: (
-        str  # Store as string, Path object might not serialize well directly to JSONL
-    )
+    local_path: str  # Store as string, Path object might not serialize well directly to JSONL
     content_md5: Optional[str] = None
     fetch_status: Literal[
         "success",
@@ -124,9 +149,7 @@ class IndexRecord(BaseModel):
     http_status: Optional[int] = None
     error_message: Optional[str] = None
     content_blocks: Optional[List[ContentBlock]] = None
-    code_snippets: Optional[list[dict]] = Field(
-        None, description="Deprecated, use content_blocks"
-    )
+    code_snippets: Optional[list[dict]] = Field(None, description="Deprecated, use content_blocks")
 
 
 # ==============================================================================
@@ -151,9 +174,7 @@ class DocDownloadRequest(BaseModel):
     download_id: str = Field(
         ..., description="Client-provided unique ID for the download task"
     )
-    depth: Optional[int] = Field(
-        None, ge=0, description="Crawling depth for website/playwright"
-    )
+    depth: Optional[int] = Field(None, ge=0, description="Crawling depth for website/playwright")
     force: Optional[bool] = Field(None, description="Overwrite existing download data")
 
     @model_validator(mode="after")
@@ -161,9 +182,7 @@ class DocDownloadRequest(BaseModel):
         st = self.source_type
         if st == "git":
             if self.url or self.depth is not None:
-                raise ValueError(
-                    "url and depth are not applicable when source_type is 'git'"
-                )
+                raise ValueError("url and depth are not applicable when source_type is 'git'")
             if not self.repo_url:
                 raise ValueError("repo_url is required when source_type is 'git'")
             if self.doc_path is None:
@@ -217,6 +236,7 @@ class DocDownloadRequest(BaseModel):
         }
     )
 
+
 class TaskStatus(BaseModel):
     """
     Response model for querying the status of a background download task via an API.
@@ -265,6 +285,7 @@ class SearchRequest(BaseModel):
             raise ValueError("extract_selector cannot be empty")
         return value
 
+
 class SearchResultItem(BaseModel):
     """
     Represents a single search result item returned by the search functionality.
@@ -279,6 +300,7 @@ class SearchResultItem(BaseModel):
     code_block_score: Optional[float] = None
     json_match_info: Optional[dict] = None
     search_context: Optional[str] = None
+
 
 # ==============================================================================
 # Older / Alternative Models (Potentially Deprecated or for specific use cases)
@@ -327,6 +349,18 @@ class DownloadStatus(BaseModel):
     download_id: Optional[str] = None  # download_id is None if validation fails early
 
 
+# ------------------------------------------------------------------
+# New: Define AdvancedSearchOptions so that it can be imported for testing.
+# ------------------------------------------------------------------
+class AdvancedSearchOptions:
+    scan_keywords: List[str]
+    extract_keywords: Optional[List[str]] = None
+    search_code_blocks: bool = True
+    search_json: bool = True
+    code_block_priority: bool = False
+    json_match_mode: str = "keys"
+
+
 # ==============================================================================
 # Testing / Verification Block
 # ==============================================================================
@@ -337,6 +371,33 @@ if __name__ == "__main__":
 
     print("--- Model Verification Start ---")
     all_models_passed = True # Flag to track overall success
+
+    # Test ExtractedBlock validation
+    print("\nTesting ExtractedBlock validation...")
+    try:
+        valid_block = ExtractedBlock(
+            type="function_definition",
+            name="test_func",
+            content="def test_func(): pass",
+            start_line=1,
+            end_line=1
+        )
+        print("OK: Valid ExtractedBlock")
+    except ValidationError as e:
+        print("FAIL: Valid ExtractedBlock:", e)
+        all_models_passed = False
+
+    try:
+        ExtractedBlock(
+            type="function_definition",
+            content="def test_func(): pass",
+            start_line=2,
+            end_line=1  # Invalid: end before start
+        )
+        print("FAIL: Should reject end_line < start_line")
+        all_models_passed = False
+    except ValidationError:
+        print("OK: Expected error (end_line < start_line)")
 
     print("\nTesting DocDownloadRequest validation...")
     # Valid examples (as before)
