@@ -51,8 +51,8 @@ import typer
 from concurrent.futures import ThreadPoolExecutor
 
 # Assuming these are correctly placed relative to this file
-from .workflow import fetch_documentation_workflow
-from .git_downloader import check_git_dependency
+from mcp_doc_retriever.downloader.workflow import fetch_documentation_workflow
+from mcp_doc_retriever.downloader.git_downloader import check_git_dependency
 from mcp_doc_retriever.utils import TIMEOUT_REQUESTS, TIMEOUT_PLAYWRIGHT  # Import defaults
 
 
@@ -263,6 +263,74 @@ def download_command(
 
 # --- Main execution ---
 if __name__ == "__main__":
-    # This allows running the CLI via `python -m mcp_doc_retriever.downloader_cli ...`
-    # or `python path/to/downloader_cli.py ...`
-    app()
+    # app() # Original Typer app call - replaced for standalone execution
+
+    # --- Standalone Usage Example ---
+    # This block allows running `uv run -m mcp_doc_retriever.downloader_cli`
+    # to verify basic functionality without CLI arguments.
+
+    import tempfile
+    import shutil
+    from pathlib import Path
+    import asyncio
+    import logging
+    from concurrent.futures import ThreadPoolExecutor
+
+    # Basic logging setup for standalone run
+    logging.basicConfig(level=logging.INFO, format="[%(levelname)s] %(message)s")
+    standalone_logger = logging.getLogger("standalone_downloader_cli")
+    standalone_logger.info("--- Running Standalone Usage Example ---")
+
+    # Define sample arguments
+    example_source_type = "website"
+    example_url = "http://example.com" # Public, simple site
+    example_download_id = "standalone_test_example_com"
+    # Create a temporary directory for this run
+    temp_base_dir_obj = tempfile.TemporaryDirectory()
+    example_base_dir = Path(temp_base_dir_obj.name)
+
+    standalone_logger.info(f"Using temp base directory: {example_base_dir}")
+    standalone_logger.info(f"Attempting download for URL: {example_url}")
+
+    # Create a thread pool executor for this run
+    executor = ThreadPoolExecutor(max_workers=5) # Use a small pool for the example
+
+    try:
+        # Call the core workflow function directly
+        asyncio.run(
+            fetch_documentation_workflow(
+                source_type=example_source_type,
+                download_id=example_download_id,
+                repo_url=None, # Not git type
+                doc_path=None, # Not git type
+                url=example_url,
+                base_dir=example_base_dir,
+                depth=1, # Limit depth for example
+                force=True, # Force to ensure it runs even if dir exists
+                max_file_size=1*1024*1024, # Limit file size (1MB)
+                timeout_requests=10, # Shorter timeout for example
+                timeout_playwright=20, # Shorter timeout for example
+                max_concurrent_requests=5,
+                executor=executor,
+                logger_override=standalone_logger, # Pass the logger
+            )
+        )
+        print("✓ Standalone Usage Example Finished Successfully.") # Added print
+        standalone_logger.info("--- Standalone Usage Example Finished Successfully ---")
+        exit_code = 0
+    except Exception as e:
+        print(f"✗ Standalone Usage Example FAILED: {e}") # Added print
+        standalone_logger.error(f"--- Standalone Usage Example FAILED: {e} ---", exc_info=True)
+        exit_code = 1
+    finally:
+        # Clean up the executor and temporary directory
+        standalone_logger.debug("Shutting down example executor.")
+        executor.shutdown(wait=True)
+        try:
+            temp_base_dir_obj.cleanup()
+            standalone_logger.info(f"Cleaned up temp directory: {example_base_dir}")
+        except Exception as cleanup_e:
+            standalone_logger.error(f"Error cleaning up temp directory {example_base_dir}: {cleanup_e}")
+        # Exit with appropriate code
+        import sys
+        sys.exit(exit_code)

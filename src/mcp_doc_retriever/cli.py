@@ -7,9 +7,16 @@ Description:
 Provides the main command-line interface for the MCP Document Retriever project
 using Typer. It defines commands for downloading and potentially searching documentation.
 
-Usage:
-  python -m mcp_doc_retriever download ...
-  python -m mcp_doc_retriever search ... (if search commands are added)
+Third-Party Documentation:
+- Typer: https://typer.tiangolo.com/
+
+Sample Input/Output:
+Input (Command Line):
+  python -m mcp_doc_retriever download website https://example.com my_download_id
+Output (Expected):
+  - Log messages indicating download progress.
+  - Downloaded files stored under './downloads/content/my_download_id/'.
+  - Index file created at './downloads/index/my_download_id.jsonl'.
 """
 
 import typer
@@ -267,12 +274,89 @@ def search_command(
 
 
 # --- Main Execution Guard ---
-# Includes graceful shutdown for the global executor
 if __name__ == "__main__":
+    # --- Standalone Usage Example ---
+    # This block allows running `uv run -m mcp_doc_retriever.cli`
+    # to verify basic download workflow orchestration without CLI arguments.
+    # It replaces the direct call to app() for standalone testing.
+
+    import tempfile
+    import shutil
+    from pathlib import Path
+    import asyncio
+    import logging
+    from concurrent.futures import ThreadPoolExecutor
+
+    # Basic logging setup for standalone run
+    # Use a distinct logger name to avoid interfering with the main CLI logger if imported
+    standalone_logger = logging.getLogger("standalone_cli_test")
+    if not standalone_logger.handlers: # Avoid adding handlers multiple times if run repeatedly
+         handler = logging.StreamHandler(sys.stdout)
+         formatter = logging.Formatter(log_format, datefmt=date_format)
+         handler.setFormatter(formatter)
+         standalone_logger.addHandler(handler)
+         standalone_logger.setLevel(logging.INFO) # Set desired level for test output
+
+    standalone_logger.info("--- Running Standalone CLI Usage Example (Download Workflow) ---")
+
+    # Define sample arguments for a simple download
+    example_source_type = "website"
+    example_url = "http://example.com" # Public, simple site
+    example_download_id = "standalone_cli_example_com"
+    # Create a temporary directory for this run
+    temp_base_dir_obj = tempfile.TemporaryDirectory()
+    example_base_dir = Path(temp_base_dir_obj.name)
+
+    standalone_logger.info(f"Using temp base directory: {example_base_dir}")
+    standalone_logger.info(f"Attempting download for URL: {example_url}")
+
+    # Create a local thread pool executor for this standalone run
+    example_executor = ThreadPoolExecutor(max_workers=2) # Small pool for example
+    example_passed = False # Flag to track success
+
     try:
-        app()
+        # Call the core workflow function directly (mimicking the 'download' command)
+        asyncio.run(
+            fetch_documentation_workflow(
+                source_type=example_source_type,
+                download_id=example_download_id,
+                repo_url=None,
+                doc_path=None,
+                url=example_url,
+                base_dir=example_base_dir,
+                depth=0, # Limit depth for example
+                force=True,
+                max_file_size=1*1024*1024, # 1MB limit
+                timeout_requests=15, # Reasonable timeout
+                timeout_playwright=30,
+                max_concurrent_requests=3,
+                executor=example_executor, # Pass the local executor
+                logger_override=standalone_logger, # Pass the distinct logger
+            )
+        )
+        example_passed = True # Mark as passed if no exception
+
+    except Exception as e:
+        standalone_logger.error(f"--- Standalone CLI Usage Example FAILED: {e} ---", exc_info=True)
+        # example_passed remains False
+
     finally:
-        # Ensure executor is shut down when CLI finishes/exits
-        logger_cli.debug("Shutting down CLI thread pool executor.")
-        cli_executor.shutdown(wait=True)  # Wait for sync tasks
-        logger_cli.debug("CLI executor shutdown complete.")
+        # Clean up the local executor and temporary directory
+        standalone_logger.debug("Shutting down example executor.")
+        example_executor.shutdown(wait=True)
+        try:
+            temp_base_dir_obj.cleanup()
+            standalone_logger.info(f"Cleaned up temp directory: {example_base_dir}")
+        except Exception as cleanup_e:
+            standalone_logger.error(f"Error cleaning up temp directory {example_base_dir}: {cleanup_e}")
+
+        # Print final status
+        print("\n------------------------------------")
+        if example_passed:
+            print("✓ Standalone CLI download example finished successfully (though internal errors may have occurred).")
+        else:
+            print("✗ Standalone CLI download example failed.")
+        print("------------------------------------")
+
+        # Exit with appropriate code for scripting
+        sys.exit(0 if example_passed else 1)

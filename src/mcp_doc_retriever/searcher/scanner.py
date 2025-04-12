@@ -12,9 +12,13 @@ from pathlib import Path
 from typing import List
 
 # Use relative imports for helpers and utils within the package
-from .helpers import is_allowed_path, is_file_size_ok, read_file_with_fallback
-from .searcher import contains_all_keywords, extract_text_from_html_content
+from mcp_doc_retriever.searcher.helpers import is_allowed_path, is_file_size_ok, read_file_with_fallback
 
+from mcp_doc_retriever.searcher.helpers import (
+    # contains_all_keywords moved to utils
+    extract_text_from_html_content,
+)
+from mcp_doc_retriever.utils import contains_all_keywords
 logger = logging.getLogger(__name__)
 
 
@@ -186,5 +190,15 @@ if __name__ == "__main__":
         print(f"Found {len(results4)} files: {[p.name for p in results4]}")
         assert len(results4) == 0
         print("Test Case 4 PASSED")
+
+    # Determine final status based on assertions
+    all_scanner_tests_passed = True # Assume true unless an assert failed above
+    # (No explicit tracking variable needed as asserts halt execution on failure)
+
+    print("\n------------------------------------")
+    if all_scanner_tests_passed: # This will only be reached if all asserts passed
+        print("✓ All Keyword Scanner tests passed successfully.")
+    # No explicit else needed, as script exits on assert failure
+    print("------------------------------------")
 
     logger.info("Keyword scanner tests finished.")

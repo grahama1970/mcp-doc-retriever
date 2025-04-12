@@ -15,13 +15,14 @@ from typing import List, Optional, Dict, Any
 
 # Use relative imports for models, helpers, and utils
 from mcp_doc_retriever.models import SearchResultItem, ContentBlock
-from .helpers import read_file_with_fallback
-from mcp_doc_retriever.utils import (
-    contains_all_keywords,
+from mcp_doc_retriever.searcher.helpers import (
+    read_file_with_fallback,
     extract_content_blocks_from_html,
     json_structure_search,
-    code_block_relevance_score,
+    code_block_relevance_score
 )
+from mcp_doc_retriever.utils import contains_all_keywords
+
 
 logger = logging.getLogger(__name__)
 
@@ -263,12 +264,14 @@ if __name__ == "__main__":
         return all(k in text for k in keywords)
 
     try:
-        from mcp_doc_retriever.utils import (
-            contains_all_keywords,
-            extract_content_blocks_from_html,
-            json_structure_search,
-            code_block_relevance_score,
+        from mcp_doc_retriever.searcher.helpers import (
+        read_file_with_fallback,
+        extract_content_blocks_from_html,
+        json_structure_search,
+        code_block_relevance_score
         )
+        from mcp_doc_retriever.utils import contains_all_keywords
+
 
         logger.info("Using actual utils for advanced extractor test.")
     except ImportError:

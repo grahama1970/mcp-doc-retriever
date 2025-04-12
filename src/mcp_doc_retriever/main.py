@@ -1,6 +1,8 @@
 """
-MCP Document Retriever FastAPI server.
+Module: main.py (FastAPI Server Entry Point)
 
+Description:
+MCP Document Retriever FastAPI server.
 - Provides `/download` endpoint to start recursive downloads (as background tasks).
 - Provides `/status/{download_id}` endpoint to check download progress/status.
 - Provides `/search` endpoint to search downloaded content.
@@ -14,6 +16,28 @@ task tracking, consider integrating Redis, a database, or file-based storage.
 Handles basic URL validation and SSRF protection on the `/download` endpoint.
 Delegates actual download logic to `downloader.start_recursive_download` and
 search logic to `searcher.perform_search`.
+
+Third-Party Documentation:
+- FastAPI: https://fastapi.tiangolo.com/
+- Uvicorn: https://www.uvicorn.org/
+- sse-starlette: https://github.com/sysid/sse-starlette
+
+Sample Input/Output:
+
+Input (Start Download):
+  curl -X POST "http://127.0.0.1:8000/download" -H "Content-Type: application/json" -d '{"url": "https://example.com", "source_type": "website"}'
+Output (Start Download):
+  {"download_id": "some-uuid-string", "status": "pending", "message": "Download task accepted."}
+
+Input (Check Status):
+  curl "http://127.0.0.1:8000/status/some-uuid-string"
+Output (Check Status):
+  {"download_id": "some-uuid-string", "status": "completed", "start_time": "...", "end_time": "...", "total_files": 5, "error_message": null}
+
+Input (Search):
+  curl -X POST "http://127.0.0.1:8000/search" -H "Content-Type: application/json" -d '{"download_id": "some-uuid-string", "scan_keywords": ["fastapi", "example"], "selector": "p"}'
+Output (Search):
+  [{"original_url": "https://example.com/page1", "extracted_content": "...", ...}, ...]
 """
 
 import logging
@@ -287,7 +311,7 @@ async def health():
 
 
 # --- Cleanup Hook ---
-@app.lifespan("shutdown")
+@app.on_event("shutdown") # Use older decorator for compatibility
 async def app_shutdown():
     """Gracefully shutdown the shared thread pool executor."""
     logger.info("Application shutting down. Closing thread pool executor.")
@@ -350,8 +374,18 @@ def usage_example():
                 print(f"Found {len(results_p)} paragraph results.")
             except Exception as e:
                 print(f"Search FAILED: {e}")
+                # If search fails, the overall example might be considered failed
+                # We'll rely on the dl_ok flag primarily for the success message
         example_executor.shutdown(wait=True)
         print("\nStandalone example finished.")
+
+        # Print success/failure based on download status
+        print("\n------------------------------------")
+        if dl_ok:
+             print("✓ Standalone main.py example finished successfully (download part).")
+        else:
+             print("✗ Standalone main.py example failed (download part).")
+        print("------------------------------------")
 
     logging.basicConfig(
         level=logging.INFO, format=log_format, stream=sys.stdout, force=True

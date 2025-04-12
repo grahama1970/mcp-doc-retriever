@@ -168,6 +168,49 @@ if TIMEOUT_REQUESTS <= 0:
     TIMEOUT_REQUESTS = _DEFAULT_TIMEOUT_REQUESTS
 
 
+
+# Example: TIMEOUT_PLAYWRIGHT
+try:
+    from .utils import TIMEOUT_PLAYWRIGHT as _DEFAULT_TIMEOUT_PLAYWRIGHT
+except ImportError:
+    _DEFAULT_TIMEOUT_PLAYWRIGHT = 60 # Fallback if utils not available
+
+_TIMEOUT_PLAYWRIGHT_FROM_ENV = os.environ.get("MCP_TIMEOUT_PLAYWRIGHT")
+_TIMEOUT_PLAYWRIGHT_FROM_FILE = _config_data.get("TIMEOUT_PLAYWRIGHT")
+
+if _TIMEOUT_PLAYWRIGHT_FROM_ENV:
+    try:
+        TIMEOUT_PLAYWRIGHT = int(_TIMEOUT_PLAYWRIGHT_FROM_ENV)
+        logger.info(
+            f"Using TIMEOUT_PLAYWRIGHT={TIMEOUT_PLAYWRIGHT} from environment variable MCP_TIMEOUT_PLAYWRIGHT"
+        )
+    except (ValueError, TypeError):
+        logger.warning(
+            f"Invalid integer value for MCP_TIMEOUT_PLAYWRIGHT env var: '{_TIMEOUT_PLAYWRIGHT_FROM_ENV}'. Using default."
+        )
+        TIMEOUT_PLAYWRIGHT = _DEFAULT_TIMEOUT_PLAYWRIGHT
+elif _TIMEOUT_PLAYWRIGHT_FROM_FILE:
+    try:
+        TIMEOUT_PLAYWRIGHT = int(_TIMEOUT_PLAYWRIGHT_FROM_FILE)
+        logger.info(
+            f"Using TIMEOUT_PLAYWRIGHT={TIMEOUT_PLAYWRIGHT} from config file {CONFIG_PATH}"
+        )
+    except (ValueError, TypeError):
+        logger.warning(
+            f"Invalid integer value for TIMEOUT_PLAYWRIGHT in config file: '{_TIMEOUT_PLAYWRIGHT_FROM_FILE}'. Using default."
+        )
+        TIMEOUT_PLAYWRIGHT = _DEFAULT_TIMEOUT_PLAYWRIGHT
+else:
+    TIMEOUT_PLAYWRIGHT = _DEFAULT_TIMEOUT_PLAYWRIGHT
+    logger.info(f"Using default TIMEOUT_PLAYWRIGHT={TIMEOUT_PLAYWRIGHT}")
+
+# Ensure timeout is positive
+if TIMEOUT_PLAYWRIGHT <= 0:
+    logger.warning(
+        f"TIMEOUT_PLAYWRIGHT must be positive ({TIMEOUT_PLAYWRIGHT} provided). Resetting to default {_DEFAULT_TIMEOUT_PLAYWRIGHT}."
+    )
+    TIMEOUT_PLAYWRIGHT = _DEFAULT_TIMEOUT_PLAYWRIGHT
+
 def usage_example():
     """Demonstrates accessing the config values programmatically."""
     # Basic logging setup for example usage if run directly
@@ -183,6 +226,7 @@ def usage_example():
     print(f"Resolved TIMEOUT_REQUESTS: {TIMEOUT_REQUESTS}")
     # Add other configured variables here
     print("---------------------------------")
+    print("✓ Config usage example executed successfully.") # Added success message
 
 
 if __name__ == "__main__":

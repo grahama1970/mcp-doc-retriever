@@ -10,6 +10,31 @@
 - Prioritize using the most common libraries in the community.
 - Always prefer official, maintained containers or packages over custom builds when available. Avoid redundant work and reduce maintenance burden by leveraging upstream expertise.
 
+# Code Reuse Enforcement (NEW)
+## Mandatory Package Check Protocol
+reuse_policy:
+  required_sources:
+    python: ["pypi", "internal-utils>=2.3"] 
+    js: ["npm", "@roo/web-core"]
+  check_order:
+    - organization_registry
+    - public_registry(pypi/npm/maven)
+    - approved_vendors
+  audit_frequency: weekly
+  timeout: 120s
+  security:
+    vulnerability_scan: true
+    max_cve_age: 30d
+
+# Enhanced Coding Principles
+- **Priority 1**: Use official maintained packages before considering custom code
+- **Dependency Requirements**:
+  - Include version constraints (e.g., Pandas==2.1.3)
+  - Validate licenses using `license_checker` tool
+- **Custom Code Justification**:
+  - Create `reuse_exception.md` with cost-benefit analysis
+  - Requires Architect approval for code >50 lines
+
 # Module Structure & Documentation Rules
 - Every core module file **must** include at the top:
   - A **description** of the module's purpose.
@@ -20,30 +45,59 @@
 
 # Mandatory Verification Sequence
 - **Mandatory Post-Edit Standalone Module Verification:** For all Code-specific roles (Coders, Refactorer): **Immediately after successfully applying edits** to a primary script file (e.g., using `apply_diff`, `write_to_file`), and **before** proceeding to any other testing (like integration tests, Docker builds) or reporting completion, you **MUST** execute the modified script's `if __name__ == '__main__':` block using `uv run <filename.py>`. This standalone execution must pass without errors and verify the script's core functionality as intended by the `__main__` block (required by module structure rules). If this check fails, you must attempt to fix the code (following standard error handling procedures and the proactive fixing principle) before proceeding. Only after this standalone check *succeeds* should you consider the edit successful and move to subsequent steps or report completion.
+- **New Pre-Code Validation**:
+  1. Run `dependency_analyzer --file=proposal.py`
+  2. Verify against `approved_packages.list`
+  3. If new packages found:
+     - Submit `security_review_request.json`
+     - Await Architect approval
 
 # Standard Procedures (Consolidated from Modes)
 - **Error/Ambiguity Handling - Step 1:** When encountering errors or ambiguity, **always** consult relevant entries in `src/mcp_doc_retriever/docs/lessons_learned.json` first for known patterns or solutions, unless explicitly instructed otherwise by the mode definition.
-+ **Error/Ambiguity Handling - Step 1 (Search Lessons Learned):** When encountering errors or ambiguity, **always search** relevant entries in `src/mcp_doc_retriever/docs/lessons_learned.json` first using `jq` via the `command` tool, unless explicitly instructed otherwise. Formulate a `jq` query to filter entries based on relevant keywords from the error message, task context, relevant files, or tools involved.
-+   - **Example `jq` Query Strategy:**
-+     - Identify 1-3 core keywords from the error/context (e.g., "docker", "permission", "build").
-+     - Construct a query to check if *any* of these keywords are present (case-insensitive) in the `keywords`, `problem`, or `solution` fields.
-+     - Example command format: `cat src/mcp_doc_retriever/docs/lessons_learned.json | jq --arg kw1 "keyword1" --arg kw2 "keyword2" '.[] | select(.keywords[]? | ascii_downcase | contains($kw1) or contains($kw2)) or (.problem? | ascii_downcase | contains($kw1) or contains($kw2)) or (.solution? | ascii_downcase | contains($kw1) or contains($kw2))'` (Adapt query based on keywords).
-+     - Review the filtered JSON results returned by `jq`.
-- **Error/Ambiguity Handling - Step 2 (Code Context):** For tasks involving code understanding, implementation, or refactoring, consult relevant documentation after checking lessons learned. This includes:
-+ **Error/Ambiguity Handling - Step 2 (Code Context):** If searching lessons learned yields no solution, consult relevant documentation for tasks involving code understanding, implementation, or refactoring. This includes:
-    a. **Downloaded Documentation:** Check content within the relevant download directory (typically under `/app/downloads/content/` inside the container) if documentation was retrieved using the `doc_download` tool. Use `read_file` or the `doc_search` tool as appropriate.
-    b. **Project Documentation:** Check any supplementary documentation stored within the project repository (e.g., in `repo_docs/`).
-- **Error/Ambiguity Handling - Step 3 (External Research):** If project documentation and lessons learned are insufficient, use `perplexity-ask` via `mcp` for external research (e.g., library issues, general patterns).
-+ **Error/Ambiguity Handling - Step 3 (External Research):** If project documentation and searching lessons learned are insufficient, use `perplexity-ask` via `mcp` for external research (e.g., library issues, general patterns).
+- **Error/Ambiguity Handling - Step 1 (Search Lessons Learned):** When encountering errors or ambiguity, **always search** relevant entries in `src/mcp_doc_retriever/docs/lessons_learned.json` first using `jq` via the `command` tool, unless explicitly instructed otherwise. Formulate a `jq` query to filter entries based on relevant keywords from the error message, task context, relevant files, or tools involved.
+  # JQ Insert Example in ROO Rules Structure
+
+  To append a new project entry to the projects list following roo guidelines, use the command below:
+
+  ```sh
+  jq '.projects += [{ "id": 3, "version": "5.4.1" }]' projects.json
+  ```
+
+  This command:
+  - Targets the JSON file (projects.json) containing your projects array.
+  - Appends a new object with the specified id and version.
+  - Complies with our standard procedure for making controlled updates to JSON configurations.
+    
+  Adjust values as necessary to meet your project's required parameters.
+- **Error/Ambiguity Handling - Step 2 (Code Context):** If searching lessons learned yields no solution, consult relevant documentation for tasks involving code understanding, implementation, or refactoring. This includes:
+   a. **Downloaded Documentation:** Check content within the relevant download directory (typically under `/app/downloads/content/` inside the container) if documentation was retrieved using the `doc_download` tool. Use `read_file` or the `doc_search` tool as appropriate.
+   b. **Project Documentation:** Check any supplementary documentation stored within the project repository (e.g., in `repo_docs/`).
+- **Error/Ambiguity Handling - Step 3 (External Research):** If project documentation and searching lessons learned are insufficient, use `perplexity-ask` via `mcp` for external research (e.g., library issues, general patterns).
  *Note: Custom mode instructions specify the escalation path if these steps fail.*
 
-# **NEW: Self-Recovery Procedure: Revert Failed Edits**
+# **Self-Recovery Procedure: Revert Failed Edits**
 - **Self-Recovery Rule:** For all Code-editing roles (`Intern Coder`, `Junior Coder`, `Senior Coder`/`code`, `Refactorer`): If a file editing tool (`apply_diff`, `write_to_file`) results in a clearly failed state, OR if after making edits, subsequent checks (including the Mandatory Post-Edit Standalone Verification) reveal the file is broken and you **cannot fix it** after applying standard error handling procedures (KB, docs, reasonable fix attempts), you **MUST** proactively attempt to revert the specific file(s) to their last committed state before reporting failure. Execute `git checkout -- <filename>` (replacing `<filename>` with the actual file path) using the `command` tool for each affected file. Report that you performed this revert action when you subsequently report the failure or escalate.
 
 # Lesson Logging
 - **Lesson Logging Rule:** If you successfully employ a novel technique, pattern, or workaround not present in the KB, *or* if prompted by your delegator, add a concise lesson learned entry to `src/mcp_doc_retriever/docs/lessons_learned.json`. Clearly state your role in the entry (e.g., 'Role: Junior Coder'). **Note:** Modes `Intern Coder` and `Presenter` do not log lessons. Custom mode instructions specify triggers for logging specific types of lessons (e.g., planning, orchestration, technical).
 
-# New Rule: Async Recursive Workflows Debugging
+# Enforcement Examples
+Package installation guardrail
+```
+uv install <pkg> || {
+echo "Failed package install - checking alternatives";
+roo search-alternative --package=<pkg>;
+}
+```
+
+
+
+# Consequences for Violations
+- **First offense**: Auto-revert via `git checkout -- <file>`
+- **Repeat offenses**: 24hr code submission lock
+- **Critical violations**: Trigger architectural review
+
+# Async Recursive Workflows Debugging
 - When building or debugging **async recursive workflows** (e.g., downloaders, crawlers):
   - **Always add deep contextual logging** at every step of the recursion, including URL processing, network calls, and error handling.
   - **Propagate error messages and tracebacks** explicitly from inner functions to the orchestration layer.

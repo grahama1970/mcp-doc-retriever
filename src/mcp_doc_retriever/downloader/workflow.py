@@ -1,12 +1,56 @@
 """
-Module: downloader_workflow.py
-
 Description:
-Contains the main asynchronous workflow orchestration logic (`fetch_documentation_workflow`).
-It receives parameters from the CLI (or direct call), determines the source type,
-and delegates the download/processing task to the appropriate specialized module
-(git_downloader or web_downloader). It sets up directories and handles the
-overall structure of the download process.
+  This module acts as the central orchestrator for the document download process.
+  The main function, `fetch_documentation_workflow`, takes parameters defining
+  the source (Git, Website, Playwright), target locations, and download options.
+  Based on the `source_type`, it:
+  1. Validates input parameters (e.g., ensures URL is provided for web sources).
+  2. Creates necessary base directories (`index/` and `content/<download_id>/`).
+  3. For 'git': Calls `git_downloader.run_git_clone` to clone the repository
+     (potentially sparse) and `git_downloader.scan_local_files_async` to find
+     relevant files. Includes progress reporting for file processing (TODO: Add processing).
+  4. For 'website'/'playwright': Calls `web_downloader.start_recursive_download`
+     to initiate the web crawl, passing along parameters like depth, timeouts,
+     and progress bar instance.
+  It utilizes a shared `ThreadPoolExecutor` provided by the caller (e.g., CLI)
+  for running synchronous tasks like Git commands or disk I/O scans asynchronously.
+
+Third-Party Documentation:
+  - tqdm (Used for progress bars): https://tqdm.github.io/
+
+Internal Module Dependencies:
+  - .git_downloader (run_git_clone, scan_local_files_async)
+  - .web_downloader (start_recursive_download)
+  - mcp_doc_retriever.utils (TIMEOUT_REQUESTS, TIMEOUT_PLAYWRIGHT)
+
+Sample Input (Conceptual - as called from CLI or API):
+  # Git Example
+  await fetch_documentation_workflow(
+      source_type="git",
+      download_id="flask_docs",
+      repo_url="https://github.com/pallets/flask.git",
+      doc_path="examples/tutorial",
+      base_dir=Path("./downloads"),
+      force=False,
+      executor=ThreadPoolExecutor()
+  )
+  # Website Example
+  await fetch_documentation_workflow(
+      source_type="website",
+      download_id="python_docs",
+      url="https://docs.python.org/3/",
+      base_dir=Path("./downloads"),
+      depth=1,
+      force=False,
+      executor=ThreadPoolExecutor()
+  )
+
+Sample Expected Output:
+  - Creates directories `./downloads/index/` and `./downloads/content/<download_id>/`.
+  - If 'git': Clones repo into `./downloads/content/<download_id>/repo/` and logs found files.
+  - If 'website'/'playwright': Creates `./downloads/index/<download_id>.jsonl` and
+    populates `./downloads/content/<download_id>/` with downloaded files (flat structure).
+  - Prints logs indicating workflow start, progress (via tqdm), and completion/errors.
 """
 
 import asyncio
@@ -242,9 +286,20 @@ async def _workflow_example():
         )
     except Exception as e:
         print(f"Direct workflow example failed: {e}")
+        example_passed = False # Mark as failed
+    else:
+        example_passed = True # Mark as passed if no exception
     finally:
         test_executor.shutdown()
-    print("Direct workflow example finished.")
+
+    print("\n------------------------------------")
+    if example_passed:
+        print("✓ Direct workflow example finished successfully (though internal errors may have occurred).")
+    else:
+        print("✗ Direct workflow example failed.")
+    print("------------------------------------")
+
+    print("Direct workflow example finished.") # Keep original finish message
 
 
 if __name__ == "__main__":

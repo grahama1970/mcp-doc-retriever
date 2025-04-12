@@ -334,8 +334,10 @@ if __name__ == "__main__":
             print(f"  Content: '{results[0].extracted_content[:80]}...'")
             assert len(results) == 1, "Expected exactly one result"
             assert "orchestrator" in results[0].extracted_content.lower()
+            print("✓ Orchestration test PASSED.") # Added print
             logger.info("Orchestration test PASSED.")
         else:
+            print("✗ Orchestration test FAILED: No results found.") # Added print
             logger.error("Orchestration test FAILED: No results found.")
             sys.exit(1)
 

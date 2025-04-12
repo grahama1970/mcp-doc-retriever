@@ -11,6 +11,34 @@ Defines data structures for:
 Third-party documentation:
 - Pydantic: https://docs.pydantic.dev
 - Pydantic GitHub: https://github.com/pydantic/pydantic
+
+Sample Input/Output:
+
+Input (Python Code):
+  record = IndexRecord(
+      original_url="http://example.com/page",
+      canonical_url="http://example.com/page",
+      local_path="content/example.com/http_example.com_page-abcdef12.html",
+      fetch_status="success",
+      content_hash="md5...",
+      last_fetched="2024-01-01T12:00:00Z"
+  )
+  print(record.model_dump_json(indent=2))
+
+Output (JSON String):
+  {
+    "original_url": "http://example.com/page",
+    "canonical_url": "http://example.com/page",
+    "local_path": "content/example.com/http_example.com_page-abcdef12.html",
+    "fetch_status": "success",
+    "content_hash": "md5...",
+    "last_fetched": "2024-01-01T12:00:00Z",
+    "http_status": null,
+    "content_type": null,
+    "content_blocks": null,
+    "error_message": null,
+    "redirect_url": null
+  }
 """
 
 from pydantic import BaseModel, Field, field_validator, AnyHttpUrl, model_validator
@@ -324,6 +352,7 @@ if __name__ == "__main__":
     from pydantic import ValidationError
 
     print("--- Model Verification Start ---")
+    all_models_passed = True # Flag to track overall success
 
     print("\nTesting DocDownloadRequest validation...")
     # Valid examples (as before)
@@ -336,14 +365,14 @@ if __name__ == "__main__":
         )
         print("OK: Valid git")
     except ValidationError as e:
-        print("FAIL: Valid git:", e)
+        print("FAIL: Valid git:", e); all_models_passed = False
     try:
         DocDownloadRequest(
             source_type="website", url="https://docs.pydantic.dev", download_id="w1"
         )
         print("OK: Valid website (default depth)")
     except ValidationError as e:
-        print("FAIL: Valid website:", e)
+        print("FAIL: Valid website:", e); all_models_passed = False
     try:
         DocDownloadRequest(
             source_type="playwright",
@@ -353,24 +382,24 @@ if __name__ == "__main__":
         )
         print("OK: Valid playwright")
     except ValidationError as e:
-        print("FAIL: Valid playwright:", e)
+        print("FAIL: Valid playwright:", e); all_models_passed = False
 
     # Invalid examples (as before)
     try:
         DocDownloadRequest(source_type="git", doc_path="docs/", download_id="fail_g1")
-        print("FAIL: Git missing repo_url")
+        print("FAIL: Git missing repo_url"); all_models_passed = False
     except ValidationError:
         print("OK: Expected error (git missing repo_url)")
     try:
         DocDownloadRequest(
             source_type="git", repo_url="https://github.com/p", download_id="fail_g2"
         )
-        print("FAIL: Git missing doc_path")
+        print("FAIL: Git missing doc_path"); all_models_passed = False
     except ValidationError:
         print("OK: Expected error (git missing doc_path)")
     try:
         DocDownloadRequest(source_type="website", download_id="fail_w1")
-        print("FAIL: Website missing url")
+        print("FAIL: Website missing url"); all_models_passed = False
     except ValidationError:
         print("OK: Expected error (website missing url)")
     try:
@@ -381,7 +410,7 @@ if __name__ == "__main__":
             doc_path="d",
             download_id="fail_mix1",
         )
-        print("FAIL: Git with website field")
+        print("FAIL: Git with website field"); all_models_passed = False
     except ValidationError:
         print("OK: Expected error (git with website field)")
     try:
@@ -391,7 +420,7 @@ if __name__ == "__main__":
             repo_url="https://github.com/p",
             download_id="fail_mix2",
         )
-        print("FAIL: Website with git field")
+        print("FAIL: Website with git field"); all_models_passed = False
     except ValidationError:
         print("OK: Expected error (website with git field)")
 
@@ -411,5 +440,12 @@ if __name__ == "__main__":
         content_blocks=[cb_code, cb_json],
     )
     print("OK: IndexRecord created:", idx_rec.model_dump(exclude_none=True))
+
+    print("\n------------------------------------")
+    if all_models_passed:
+        print("✓ All Model verification tests passed successfully.")
+    else:
+        print("✗ Some Model verification tests failed.")
+    print("------------------------------------")
 
     print("\n--- Model Verification End ---")

@@ -1,13 +1,55 @@
 """
-Module: web_downloader.py
-
 Description:
-Contains the core asynchronous logic for recursively downloading web content
-(`start_recursive_download`). It handles URL queuing, checks robots.txt, manages
-concurrency using asyncio.Semaphore, fetches content using either httpx or
-Playwright (delegated to fetchers module), extracts links, and writes detailed
-index records (`_write_index_record`) for each processed URL to a JSONL file.
-Uses tqdm for progress reporting.
+  This module orchestrates the recursive crawling and downloading of web pages
+  starting from a given URL. It manages a queue of URLs to visit, respects
+  robots.txt rules, limits concurrent downloads using asyncio.Semaphore, and
+  delegates the actual fetching of content (via HTTPX or Playwright) to the
+  `fetchers` module. For each successfully downloaded page, it extracts links
+  for further crawling (up to a specified depth) and generates a safe local
+  file path using `helpers.url_to_local_path`. It records the outcome of
+  each URL processing attempt (success, skip, failure) in a JSONL index file.
+  Progress is reported using the `tqdm` library.
+
+Third-Party Documentation:
+  - httpx (Used for robots.txt checks & passed to fetchers): https://www.python-httpx.org/
+  - aiofiles (Used for async writing of index file): https://github.com/Tinche/aiofiles
+  - tqdm (Used for progress bars): https://tqdm.github.io/
+
+Internal Module Dependencies:
+  - .helpers (url_to_local_path)
+  - .fetchers (fetch_single_url_requests, fetch_single_url_playwright)
+  - .robots (_is_allowed_by_robots)
+  - mcp_doc_retriever.utils (canonicalize_url, is_url_private_or_internal, timeouts)
+  - mcp_doc_retriever.models (IndexRecord)
+
+Sample Input (Conceptual - assumes setup within a running asyncio loop):
+  base_dir = Path("./test_web_download")
+  download_id = "my_web_crawl"
+  start_url = "https://httpbin.org/links/10/0"
+  depth = 1
+  executor = ThreadPoolExecutor() # If needed by fetchers/helpers
+  progress_bar = tqdm(desc="Web Crawl", unit="page")
+
+  await start_recursive_download(
+      start_url=start_url,
+      depth=depth,
+      force=True,
+      download_id=download_id,
+      base_dir=base_dir,
+      use_playwright=False,
+      progress_bar=progress_bar,
+      executor=executor,
+  )
+
+Sample Expected Output:
+  - Creates directories: `./test_web_download/index/` and `./test_web_download/content/my_web_crawl/`
+  - Creates hostname subdirectory: `./test_web_download/content/my_web_crawl/httpbin.org/`
+  - Downloads HTML files into the hostname subdirectory using the flat, hashed filename
+    structure (e.g., `.../httpbin.org/http_httpbin.org_links_10_0-HASH.html`, `.../http_httpbin.org_links_10_1-HASH.html`, etc.).
+  - Creates and populates `./test_web_download/index/my_web_crawl.jsonl` with IndexRecord entries
+    for each processed URL (the start URL and linked URLs up to depth 1).
+  - Prints logs to the console.
+  - Displays and updates a tqdm progress bar.
 """
 
 import asyncio
@@ -28,9 +70,10 @@ from mcp_doc_retriever.utils import (
     TIMEOUT_REQUESTS,
     TIMEOUT_PLAYWRIGHT,
     canonicalize_url,
-    url_to_local_path,  # Assume returns string path
+    # url_to_local_path moved to downloader.helpers
     is_url_private_or_internal,
 )
+from mcp_doc_retriever.downloader.helpers import url_to_local_path
 from mcp_doc_retriever.models import IndexRecord
 from .robots import _is_allowed_by_robots
 from .fetchers import (
@@ -227,8 +270,9 @@ async def start_recursive_download(
                             logger.info(f"{skip_reason}: {current_canonical_url}")
                         else:
                             # Only calculate path if checks pass. url_to_local_path needs string base dir.
-                            local_path_str = url_to_local_path(
-                                str(content_base_dir), current_canonical_url
+                            local_path = url_to_local_path(
+                                content_base_dir, 
+                                current_canonical_url
                             )
                             logger.debug(
                                 f"Mapped {current_canonical_url} to local path: {local_path_str}"
@@ -522,8 +566,19 @@ async def _web_example():
     except Exception as e:
         print(f"Web downloader example failed: {e}")
         logger.error("Example failed", exc_info=True)
+        example_passed = False # Mark as failed
+    else:
+        example_passed = True # Mark as passed if no exception
+
     finally:
-        print("Direct web downloader example finished.")
+        print("\n------------------------------------")
+        if example_passed:
+             print("✓ Direct web downloader example finished successfully (though internal errors may have occurred).")
+        else:
+             print("✗ Direct web downloader example failed.")
+        print("------------------------------------")
+
+        print("Direct web downloader example finished.") # Keep original finish message
         # Check results
         index_file = test_index_dir / f"{download_id}.jsonl"
         if index_file.exists():

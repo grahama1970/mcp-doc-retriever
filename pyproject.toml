@@ -20,6 +20,7 @@ dependencies = [
     "pytest-asyncio>=0.26.0",
     "sse-starlette>=2.2.1",
     "tqdm>=4.67.1",
+    "pathvalidate>=3.2.3",
 ]
 [project.optional-dependencies]
 dev = ["pytest", "ruff", "pytest-asyncio"]
