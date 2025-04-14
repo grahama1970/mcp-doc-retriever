@@ -1,379 +1,513 @@
 """
-Module: advanced_extractor.py
-
 Description:
-    Handles the advanced, single-file snippet extraction based on pre-parsed
-    ContentBlocks (from utils.extract_content_blocks_from_html). Includes logic
-    specific to searching within code blocks and JSON structures, relevance scoring,
-    and prioritization.
+    This module provides individual URL fetching functions used by the web_downloader
+    module. It includes two main functions:
+    - fetch_single_url_requests: Uses httpx for standard HTTP requests
+    - fetch_single_url_playwright: Uses Playwright for JavaScript-rendered pages
+
+Third-Party Documentation:
+    - httpx: https://www.python-httpx.org/
+    - playwright: https://playwright.dev/python/
+
+Sample Input/Output:
+    url = "https://example.com"
+    target_path = "./downloads/content/example.com/page.html"
+    result = await fetch_single_url_requests(
+        url=url,
+        target_local_path=target_path,
+        force=False,
+        allowed_base_dir="./downloads/content",
+        timeout=30,
+        client=httpx.AsyncClient(),
+        max_size=10_000_000
+    )
+    # Returns: {
+    #     "status": "success",
+    #     "target_path": "./downloads/content/example.com/page.html",
+    #     "content_md5": "d41d8cd98f00b204e9800998ecf8427e",
+    #     "http_status": 200,
+    #     "detected_links": ["http://example.com/other.html"],
+    # }
 """
 
-from loguru import logger
-import json
+import asyncio
+import hashlib
+import logging
+import os
 from pathlib import Path
-from typing import List, Optional, Dict, Any
+from typing import Dict, Any, Optional, List
+from urllib.parse import urljoin
 
-from mcp_doc_retriever.models import SearchResultItem, ContentBlock
-from mcp_doc_retriever.searcher.helpers import (
-    read_file_with_fallback,
-    extract_content_blocks_from_html,
-    json_structure_search,
-    code_block_relevance_score,
-)
-from mcp_doc_retriever.utils import contains_all_keywords
+import httpx
+from bs4 import BeautifulSoup
+from playwright.async_api import async_playwright
 
+logger = logging.getLogger(__name__)
 
-# ------------------------------------------------------------------
-# AdvancedSearchOptions defined as a Pydantic model
-# ------------------------------------------------------------------
-from pydantic import BaseModel
-
-
-class AdvancedSearchOptions(BaseModel):
-    scan_keywords: List[str]
-    extract_keywords: Optional[List[str]] = None
-    search_code_blocks: bool = True
-    search_json: bool = True
-    code_block_priority: bool = False
-    json_match_mode: str = "keys"
-
-
-# ------------------------------------------------------------------
-# Main extraction function
-# ------------------------------------------------------------------
-def extract_advanced_snippets_with_options(
-    file_path: Path,  # Expect a Path object
-    scan_keywords: List[str],
-    extract_keywords: Optional[List[str]] = None,
-    search_code_blocks: bool = True,
-    search_json: bool = True,
-    code_block_priority: bool = False,
-    json_match_mode: str = "keys",
-) -> List[SearchResultItem]:
+async def fetch_single_url_requests(
+    url: str,
+    target_local_path: str,
+    force: bool = False,
+    allowed_base_dir: str = "",
+    timeout: int = 30,
+    client: Optional[httpx.AsyncClient] = None,  # Accepts optional client
+    max_size: Optional[int] = None,
+) -> Dict[str, Any]:
     """
-    Performs advanced snippet extraction from a SINGLE file using pre-extracted content blocks.
-    Searches through content blocks for keywords and prioritizes code/JSON matches if requested.
+    Fetches a single URL using httpx and saves it to the target path.
+    Correctly handles optionally provided httpx.AsyncClient instances.
 
     Args:
-        file_path: Path to the HTML/Markdown file.
-        scan_keywords: List of keywords (all must match) used for search.
-        extract_keywords: Optional list of secondary keywords (all must match).
-        search_code_blocks: Whether to perform matching in code blocks.
-        search_json: Whether to perform matching in JSON snippets.
-        code_block_priority: Whether to prioritize code block matches in the output.
-        json_match_mode: The mode for JSON structure search (“keys”, “values”, or “structure”).
+        url: The URL to fetch
+        target_local_path: Where to save the downloaded content (string path)
+        force: Whether to overwrite existing files
+        allowed_base_dir: Base directory path (string) that target_local_path must be under
+        timeout: Request timeout in seconds
+        client: Optional pre-configured and managed httpx.AsyncClient instance.
+                If provided, this function will *not* close it.
+                If None, a temporary client will be created and closed.
+        max_size: Maximum file size to download (in bytes)
 
     Returns:
-        A list of SearchResultItem instances containing the results.
+        Dictionary with status information and results
     """
-    content = read_file_with_fallback(file_path)
-    if content is None:
-        logger.warning("Cannot read file for advanced extraction: {}", file_path)
-        return []
+    target_path = Path(target_local_path)
+    allowed_base = Path(allowed_base_dir).resolve() if allowed_base_dir else None
+    http_status_code = None  # Initialize
 
-    results: List[SearchResultItem] = []
-    file_uri = f"file://{file_path.resolve()}"
+    # --- Path and Pre-check Validation ---
+    if allowed_base:
+        try:
+            # Ensure target path resolves and is within the allowed base
+            resolved_target = target_path.resolve()
+            if not str(resolved_target).startswith(str(allowed_base)):
+                raise ValueError(
+                    f"Target path {resolved_target} is outside allowed base {allowed_base}"
+                )
+        except Exception as path_val_e:
+            logger.error(
+                f"Path validation failed for '{target_local_path}': {path_val_e}"
+            )
+            return {
+                "status": "failed",
+                "error_message": f"Target path validation failed: {path_val_e}",
+            }
+
+    if target_path.exists() and not force:
+        logger.info(f"Skipping existing file (force=False): {target_path}")
+        return {
+            "status": "skipped",
+            "target_path": str(target_path),
+            "error_message": "File exists and force=False",
+        }
 
     try:
-        content_blocks = extract_content_blocks_from_html(content, source_url=file_uri)
+        target_path.parent.mkdir(parents=True, exist_ok=True)
     except Exception as e:
         logger.error(
-            "Failed to extract content blocks from {}: {}", file_path, e, exc_info=True
+            f"Failed to create directory {target_path.parent}: {e}", exc_info=True
         )
-        return []
+        return {
+            "status": "failed",
+            "error_message": f"Failed to create directory {target_path.parent}: {e}",
+        }
 
-    # Pre-calculate lowercase versions of keywords.
-    scan_keywords_lower = [kw.lower() for kw in scan_keywords if kw and kw.strip()]
-    extract_keywords_lower = [
-        kw.lower() for kw in (extract_keywords or []) if kw and kw.strip()
-    ]
+    # --- Client Handling and Download ---
+    local_client = None  # To hold a client if we create one locally
+    try:
+        if client is None:
+            # No client provided, create and manage one locally
+            logger.debug(
+                f"No shared client provided for {url}, creating temporary client."
+            )
+            # Note: follow_redirects=True is the default in AsyncClient
+            local_client = httpx.AsyncClient(timeout=timeout, follow_redirects=True)
+            client_to_use = local_client
+        else:
+            # Use the provided shared client
+            logger.debug(f"Using shared client for {url}.")
+            client_to_use = client
 
-    for block in content_blocks:
-        block_content_lower = block.content.lower()
-        matched = False
-        match_info: Dict[str, Any] = {}
-        score: Optional[float] = None
-        search_context = block.type  # Default context
+        # *** CORE FIX: Use the selected client directly for the request ***
+        # *** Do NOT use 'async with client_to_use:' here ***
+        logger.debug(
+            f"Sending GET stream request to {url} using {'local' if local_client else 'shared'} client."
+        )
+        async with client_to_use.stream("GET", url) as response:
+            http_status_code = response.status_code  # Store status code early
+            logger.debug(f"Received response for {url}: Status {http_status_code}")
 
-        # --- JSON Block Processing ---
-        if block.type == "json" and search_json:
-            all_check_keywords = scan_keywords_lower + extract_keywords_lower
-            if all_check_keywords:
-                keyword_present_in_raw = any(
-                    kw in block_content_lower for kw in all_check_keywords
-                )
-                structure_match_info: Dict[str, Any] = {}
+            # Check for non-success status codes (e.g., 404, 500)
+            if not response.is_success:
+                error_msg = f"HTTP error {http_status_code} for URL: {url}"
+                logger.warning(error_msg)
+                # Attempt to read body for more info, but don't fail if it raises error
                 try:
-                    json_obj = json.loads(block.content)
-                    if scan_keywords:
-                        structure_match_info = json_structure_search(
-                            json_obj, scan_keywords, match_mode=json_match_mode
+                    body_preview = (await response.aread())[:500].decode(
+                        "utf-8", errors="replace"
+                    )
+                    error_msg += f" - Body Preview: {body_preview}"
+                except Exception:
+                    pass  # Ignore if reading body fails on error status
+                return {
+                    "status": "failed",
+                    "error_message": error_msg,
+                    "http_status": http_status_code,
+                }
+
+            # Check content length before reading if max_size specified
+            content_length_header = response.headers.get("content-length")
+            if max_size and content_length_header:
+                try:
+                    content_length = int(content_length_header)
+                    if content_length > max_size:
+                        logger.warning(
+                            f"Content-Length {content_length} exceeds max_size {max_size} for {url}"
                         )
-                    if (
-                        structure_match_info.get("score", 0) > 0
-                        or keyword_present_in_raw
-                    ):
-                        matched = True
-                        match_info = structure_match_info
-                        if (
-                            keyword_present_in_raw
-                            and structure_match_info.get("score", 0) == 0
-                        ):
-                            match_info["match_type"] = "keyword_in_raw_json"
-                        search_context = "json"
-                except json.JSONDecodeError:
-                    logger.debug(
-                        "Block in {} is not valid JSON. Checking raw content...",
-                        file_path,
-                    )
-                    if keyword_present_in_raw:
-                        matched = True
-                        match_info = {"match_type": "keyword_in_invalid_json"}
-                        search_context = block.type
-                except Exception as e:
+                        return {
+                            "status": "failed",
+                            "error_message": f"Content-Length {content_length} exceeds max_size {max_size}",
+                            "http_status": http_status_code,
+                        }
+                except ValueError:
                     logger.warning(
-                        "Error during JSON processing block from {}: {}",
-                        file_path,
-                        e,
-                        exc_info=True,
+                        f"Invalid Content-Length header '{content_length_header}' for {url}"
                     )
 
-        # --- Code Block Processing ---
-        elif block.type == "code" and search_code_blocks:
-            if contains_all_keywords(
-                block_content_lower, scan_keywords_lower
-            ) and contains_all_keywords(block_content_lower, extract_keywords_lower):
-                matched = True
+            # Read the response body content
+            logger.debug(f"Reading content for {url}")
+            content = await response.aread()
+            logger.debug(f"Read {len(content)} bytes for {url}")
+
+            # Check actual size if max_size specified (in case Content-Length was missing/wrong)
+            if max_size and len(content) > max_size:
+                logger.warning(
+                    f"Downloaded content size {len(content)} exceeds max_size {max_size} for {url}"
+                )
+                return {
+                    "status": "failed",
+                    "error_message": f"Downloaded content size {len(content)} exceeds max_size {max_size}",
+                    "http_status": http_status_code,
+                }
+
+            # --- Process Content (Inside Response Context) ---
+            logger.debug(f"Processing content for {url} inside response context.")
+            content_md5 = hashlib.md5(content).hexdigest()
+            detected_links = []
+            # Access headers *inside* the context block
+            content_type = response.headers.get("content-type", "").lower()
+
+            if "html" in content_type:
+                logger.debug(f"Content type for {url} is HTML, extracting links.")
                 try:
-                    score = code_block_relevance_score(
-                        block.content, scan_keywords, block.language
-                    )
+                    # Use html.parser for resilience, pass the bytes directly
+                    soup = BeautifulSoup(content, "html.parser")
+                    for a_tag in soup.find_all("a", href=True):
+                        href = a_tag["href"].strip()
+                        # Basic filtering of non-navigational links
+                        if href and not href.startswith(
+                            ("#", "javascript:", "mailto:", "tel:")
+                        ):
+                            try:
+                                # Resolve relative URLs against the fetched URL
+                                abs_url = urljoin(url, href)
+                                detected_links.append(abs_url)
+                            except ValueError:
+                                logger.warning(
+                                    f"Could not resolve relative link '{href}' from base '{url}'"
+                                )
+                    logger.debug(f"Extracted {len(detected_links)} links from {url}")
                 except Exception as e:
-                    logger.warning(
-                        "Error calculating code block score for {}: {}", file_path, e
-                    )
-                    score = 0.0
-                search_context = "code"
+                    logger.warning(f"Error extracting links from {url}: {e}", exc_info=True)
+            else:
+                logger.debug(
+                    f"Content type '{content_type}' for {url} is not HTML, skipping link extraction."
+                )
 
-        # --- Text Block Processing ---
-        elif block.type == "text":
-            if contains_all_keywords(
-                block_content_lower, scan_keywords_lower
-            ) and contains_all_keywords(block_content_lower, extract_keywords_lower):
-                matched = True
-                search_context = "text"
-
-        # --- If this block matches, construct a SearchResultItem.
-        if matched:
+            # --- Write Content to File (Revised Error Handling) ---
+            file_written_successfully = False # Flag to track success
             try:
-                item = SearchResultItem(
-                    original_url=block.source_url or file_uri,
-                    local_path="",  # Provide empty string (or compute a path if needed)
-                    content_preview=block.content[
-                        :100
-                    ],  # A preview: first 100 characters
-                    match_details=block.content,  # Full content as details
-                    selector_matched=(
-                        block.metadata.get("selector", block.type)
-                        if block.metadata
-                        else block.type
-                    ),
-                    content_block=block,
-                    code_block_score=score if search_context == "code" else None,
-                    json_match_info=match_info if search_context == "json" else None,
-                    search_context=search_context,
-                )
-                results.append(item)
-            except Exception as e:
-                logger.error(
-                    "Error creating SearchResultItem for matched block from {}: {}",
-                    file_path,
-                    e,
-                    exc_info=True,
-                )
+                logger.debug(f"Attempting to write {len(content)} bytes to {target_path}")
+                target_path.write_bytes(content)
+                # If write_bytes completes without error, set the flag
+                file_written_successfully = True
+                logger.info(f"Successfully saved {url} to {target_path}")
+            except OSError as e: # Catch specific OS-level errors like permissions, disk full, etc.
+                error_msg = f"Failed to write file {target_path} due to OSError: {e}"
+                logger.error(error_msg, exc_info=True)
+                return {
+                    "status": "failed",
+                    "error_message": error_msg,
+                    "http_status": http_status_code,
+                    "content_md5": content_md5,
+                }
+            except Exception as e: # Catch any other unexpected errors during write
+                error_msg = f"Unexpected error writing file {target_path}: {e}"
+                logger.error(error_msg, exc_info=True)
+                return {
+                    "status": "failed",
+                    "error_message": error_msg,
+                    "http_status": http_status_code,
+                    "content_md5": content_md5,
+                }
 
-    # --- Optional sorting by code block priority ---
-    if code_block_priority and results:
-        results = sorted(
-            results,
-            key=lambda r: (r.search_context != "code", -(r.code_block_score or 0)),
-        )
+            # --- Success (Only if file writing flag is True) ---
+            if file_written_successfully:
+                return {
+                    "status": "success",
+                    "target_path": str(target_path),
+                    "content_md5": content_md5,
+                    "http_status": http_status_code,
+                    "detected_links": detected_links,
+                }
+            else:
+                # This case should ideally not be reached if exceptions are caught,
+                # but acts as a safeguard.
+                logger.error(f"File writing did not succeed for {target_path}, but no specific exception was caught.")
+                return {
+                    "status": "failed",
+                    "error_message": "File writing failed for unknown reason after download.",
+                    "http_status": http_status_code,
+                    "content_md5": content_md5,
+                }
+            # --- End processing inside response context ---
 
-    logger.debug(
-        "Advanced extraction found {} relevant snippets in {}", len(results), file_path
-    )
-    return results
+    # --- Exception Handling ---
+    except httpx.TimeoutException as e:
+        logger.warning(f"Request timed out for {url}: {e}")
+        return {
+            "status": "failed",
+            "error_message": f"Request timed out: {e}",
+            "http_status": http_status_code,
+        }
+    except httpx.RequestError as e:
+        # Covers connection errors, DNS errors, etc.
+        logger.warning(f"HTTP request error for {url}: {e}")
+        return {
+            "status": "failed",
+            "error_message": f"Request error: {e}",
+            "http_status": http_status_code,
+        }
+    except Exception as e:
+        # Catch-all for other unexpected errors during the process
+        logger.error(f"Unexpected error fetching {url}: {e}", exc_info=True)
+        return {
+            "status": "failed",
+            "error_message": f"Unexpected error: {e}",
+            "http_status": http_status_code,  # Include status if available
+        }
+    finally:
+        # --- Explicitly close the client *only if* it was created locally ---
+        if local_client:
+            try:
+                logger.debug(f"Closing locally created client for {url}.")
+                await local_client.aclose()
+            except Exception as close_e:
+                logger.warning(f"Error closing locally created httpx client: {close_e}")
 
+async def fetch_single_url_playwright(
+    url: str,
+    target_local_path: str,
+    force: bool = False,
+    allowed_base_dir: str = "",
+    timeout: int = 30,
+) -> Dict[str, Any]:
+    """
+    Fetches a single URL using Playwright and saves it to the target path.
+    This function handles JavaScript-rendered pages.
 
-# ------------------------------------------------------------------
-# Standalone Execution / Testing Section
-# ------------------------------------------------------------------
-if __name__ == "__main__":
-    import tempfile
-    from mcp_doc_retriever.models import ContentBlock  # For test data
+    Args:
+        url: The URL to fetch
+        target_local_path: Where to save the downloaded content
+        force: Whether to overwrite existing files
+        allowed_base_dir: Base directory that target_local_path must be under
+        timeout: Maximum time to wait for page load in seconds
 
-    # For testing we create some mock functions in case the real ones aren’t available.
-    def mock_extract_blocks(content: str, source_url: str) -> List[ContentBlock]:
-        blocks = []
-        if '"type": "json"' in content:
-            blocks.append(
-                ContentBlock(
-                    type="json",
-                    content='{"key": "value", "scan": "yes"}',
-                    source_url=source_url,
-                )
-            )
-        if "def func" in content:
-            blocks.append(
-                ContentBlock(
-                    type="code",
-                    content="def func(scan):\n  pass",
-                    language="python",
-                    source_url=source_url,
-                )
-            )
-        blocks.append(
-            ContentBlock(
-                type="text",
-                content="Some text with scan keyword.",
-                source_url=source_url,
-            )
-        )
-        return blocks
+    Returns:
+        Dictionary with status information and results
+    """
+    target_path = Path(target_local_path)
+    allowed_base = Path(allowed_base_dir).resolve() if allowed_base_dir else None
 
-    def mock_json_search(obj: Any, keywords: List[str], match_mode: str) -> Dict:
-        return {"score": 0.5} if "scan" in str(obj) else {"score": 0}
+    # Validate target path is under allowed base directory
+    if allowed_base and not str(target_path.resolve()).startswith(str(allowed_base)):
+        return {
+            "status": "failed",
+            "error_message": f"Target path {target_path} not under allowed base directory {allowed_base}",
+        }
 
-    def mock_code_score(code: str, keywords: List[str], lang: Optional[str]) -> float:
-        return 0.8 if "scan" in code else 0.1
+    # Check if file exists and force is False
+    if target_path.exists() and not force:
+        return {
+            "status": "skipped",
+            "target_path": str(target_path),
+            "error_message": "File exists and force=False",
+        }
 
-    def mock_contains_all(text: str, keywords: List[str]) -> bool:
-        return all(k in text for k in keywords)
+    # Ensure parent directory exists
+    try:
+        target_path.parent.mkdir(parents=True, exist_ok=True)
+    except Exception as e:
+        return {
+            "status": "failed",
+            "error_message": f"Failed to create directory {target_path.parent}: {e}",
+        }
 
     try:
-        from mcp_doc_retriever.searcher.helpers import (
-            read_file_with_fallback,
-            extract_content_blocks_from_html,
-            json_structure_search,
-            code_block_relevance_score,
-        )
-        from mcp_doc_retriever.utils import contains_all_keywords
+        async with async_playwright() as p:
+            browser = await p.chromium.launch()
+            page = await browser.new_page()
+            
+            try:
+                response = await page.goto(url, timeout=timeout * 1000, wait_until='networkidle')
+                if not response:
+                    return {
+                        "status": "failed",
+                        "error_message": "No response received from page",
+                    }
+                
+                if not response.ok:
+                    return {
+                        "status": "failed",
+                        "error_message": f"HTTP {response.status}",
+                        "http_status": response.status,
+                    }
 
-        logger.info("Using actual utils for advanced extractor test.")
-    except ImportError:
-        logger.warning("Mocking utils for advanced extractor test.")
-        contains_all_keywords = mock_contains_all
-        extract_content_blocks_from_html = mock_extract_blocks
-        json_structure_search = mock_json_search
-        code_block_relevance_score = mock_code_score
+                # Get rendered HTML
+                content = await page.content()
+                content_bytes = content.encode('utf-8')
 
-    logger.info("Running advanced_extractor standalone test...")
+                # Calculate MD5
+                content_md5 = hashlib.md5(content_bytes).hexdigest()
 
-    # Dictionary to capture test results
-    test_results = {}
-    summary_all_passed = True
+                # Extract links
+                detected_links = []
+                try:
+                    for a in await page.query_selector_all('a[href]'):
+                        href = await a.get_attribute('href')
+                        if href and not href.startswith(('#', 'javascript:', 'mailto:')):
+                            abs_url = urljoin(url, href)
+                            detected_links.append(abs_url)
+                except Exception as e:
+                    logger.warning(f"Error extracting links from {url}: {e}")
 
-    with tempfile.TemporaryDirectory() as tmpdir:
-        base_dir = Path(tmpdir)
-        test_html_content = """
-        <html><body>
-            <p>Some text with scan keyword.</p>
-            <pre><code class="language-python">def func(scan):
-      pass</code></pre>
-            <pre><code class="language-json">{
-      "key": "value",
-      "scan": "yes",
-      "extract": "maybe"
-    }</code></pre>
-            <p>Another paragraph.</p>
-        </body></html>
-        """
-        test_file = base_dir / "advanced_test.html"
-        test_file.write_text(test_html_content, encoding="utf-8")
-        logger.info("Test file created: {}", test_file)
+                # Write content
+                file_written_successfully = False # Flag to track success
+                try:
+                    logger.debug(f"Attempting to write {len(content_bytes)} bytes (Playwright) to {target_path}")
+                    target_path.write_bytes(content_bytes)
+                    file_written_successfully = True
+                    logger.info(f"Successfully saved (Playwright) {url} to {target_path}")
+                except OSError as e:
+                    error_msg = f"Failed to write file (Playwright) {target_path} due to OSError: {e}"
+                    logger.error(error_msg, exc_info=True)
+                    return {
+                        "status": "failed",
+                        "error_message": error_msg,
+                        "http_status": response.status if response else None,
+                    }
+                except Exception as e:
+                    error_msg = f"Unexpected error writing file (Playwright) {target_path}: {e}"
+                    logger.error(error_msg, exc_info=True)
+                    return {
+                        "status": "failed",
+                        "error_message": error_msg,
+                        "http_status": response.status if response else None,
+                    }
 
-        # Test Case 1: Scan for "scan"
-        try:
-            results1 = extract_advanced_snippets_with_options(
-                file_path=test_file,
-                scan_keywords=["scan"],
-                search_code_blocks=True,
-                search_json=True,
+                if file_written_successfully:
+                    # Note: The original success return block starting at line 447 is kept,
+                    # this diff only replaces the try/except block for writing.
+                    pass # Placeholder, the actual success return is handled later
+                else:
+                    logger.error(f"File writing did not succeed (Playwright) for {target_path}, returning failure.")
+                    return {
+                        "status": "failed",
+                        "error_message": "File writing failed for unknown reason after download (Playwright).",
+                        "http_status": response.status if response else None,
+                    }
+
+                # --- Success/Failure Return (Based on Flag) ---
+                if file_written_successfully:
+                    # This return was already here, just moved after the flag check
+                    return {
+                        "status": "success",
+                        "target_path": str(target_path),
+                        "content_md5": content_md5,
+                        "http_status": response.status,
+                        "detected_links": detected_links,
+                    }
+                else:
+                    logger.error(f"File writing did not succeed (Playwright) for {target_path}, returning failure.")
+                    return {
+                        "status": "failed",
+                        "error_message": "File writing failed for unknown reason after download (Playwright).",
+                        "http_status": response.status if response else None,
+                    }
+
+                return {
+                    "status": "success",
+                    "target_path": str(target_path),
+                    "content_md5": content_md5,
+                    "http_status": response.status,
+                    "detected_links": detected_links,
+                }
+
+            except Exception as e:
+                if 'ERR_BLOCKED_BY_CLIENT' in str(e):
+                    return {
+                        "status": "failed_paywall",
+                        "error_message": "Blocked by paywall/client-side protection",
+                    }
+                return {
+                    "status": "failed",
+                    "error_message": f"Navigation failed: {str(e)}",
+                }
+            finally:
+                await page.close()
+                await browser.close()
+
+    except Exception as e:
+        return {
+            "status": "failed",
+            "error_message": f"Playwright error: {str(e)}",
+        }
+
+# Standalone test
+if __name__ == "__main__":
+    import sys
+    import tempfile
+    
+    async def test_fetchers():
+        logging.basicConfig(level=logging.INFO)
+        
+        with tempfile.TemporaryDirectory() as tmpdir:
+            test_url = "https://httpbin.org/html"
+            target_path = os.path.join(tmpdir, "test.html")
+            
+            print("\nTesting fetch_single_url_requests...")
+            result1 = await fetch_single_url_requests(
+                url=test_url,
+                target_local_path=target_path,
+                force=True,
+                allowed_base_dir=tmpdir,
             )
-            if len(results1) == 3:
-                test_results["Test Case 1"] = "PASS"
-            else:
-                test_results["Test Case 1"] = f"FAIL (Expected 3, got {len(results1)})"
-        except Exception as ex:
-            test_results["Test Case 1"] = f"ERROR: {ex}"
-
-        # Test Case 2: Scan for "scan" with extract filter "extract" (expects JSON only)
-        try:
-            results2 = extract_advanced_snippets_with_options(
-                file_path=test_file,
-                scan_keywords=["scan"],
-                extract_keywords=["extract"],
-                search_code_blocks=True,
-                search_json=True,
+            print(f"Result: {result1}")
+            assert result1["status"] == "success", "requests fetch failed"
+            
+            print("\nTesting fetch_single_url_playwright...")
+            result2 = await fetch_single_url_playwright(
+                url=test_url,
+                target_local_path=target_path.replace(".html", "_pw.html"),
+                force=True,
+                allowed_base_dir=tmpdir,
             )
-            if len(results2) == 1 and results2[0].search_context == "json":
-                test_results["Test Case 2"] = "PASS"
-            else:
-                test_results["Test Case 2"] = (
-                    f"FAIL (Expected 1 JSON match, got {len(results2)})"
-                )
-        except Exception as ex:
-            test_results["Test Case 2"] = f"ERROR: {ex}"
+            print(f"Result: {result2}")
+            assert result2["status"] == "success", "playwright fetch failed"
+            
+            print("\nAll tests passed!")
 
-        # Test Case 3: Scan for "scan", prioritize code blocks
-        try:
-            results3 = extract_advanced_snippets_with_options(
-                file_path=test_file,
-                scan_keywords=["scan"],
-                search_code_blocks=True,
-                search_json=True,
-                code_block_priority=True,
-            )
-            if len(results3) == 3 and results3[0].search_context == "code":
-                test_results["Test Case 3"] = "PASS"
-            else:
-                test_results["Test Case 3"] = (
-                    f"FAIL (Expected code block first; got context {results3[0].search_context if results3 else 'None'})"
-                )
-        except Exception as ex:
-            test_results["Test Case 3"] = f"ERROR: {ex}"
-
-        # Test Case 4: Only search JSON (disable code block search)
-        try:
-            results4 = extract_advanced_snippets_with_options(
-                file_path=test_file,
-                scan_keywords=["scan"],
-                search_code_blocks=False,
-                search_json=True,
-            )
-            if len(results4) == 2 and not any(
-                r.search_context == "code" for r in results4
-            ):
-                test_results["Test Case 4"] = "PASS"
-            else:
-                test_results["Test Case 4"] = (
-                    f"FAIL (Expected 2 non-code matches; got {len(results4)})"
-                )
-        except Exception as ex:
-            test_results["Test Case 4"] = f"ERROR: {ex}"
-
-        # Print test-by-test summary
-        print("\n--------------------")
-        for name in sorted(test_results.keys()):
-            result = test_results.get(name, "UNKNOWN (Test did not run)")
-            print(f"- {name}: {result}")
-            if "FAIL" in result or "ERROR" in result or "UNKNOWN" in result:
-                summary_all_passed = False
-        print("\n--------------------")
-        if summary_all_passed:
-            print("✓ All Advanced Extractor tests passed!")
-        else:
-            print("✗ Some Advanced Extractor tests FAILED or were SKIPPED.")
-        print("--------------------")
-
-    logger.info("Advanced extractor tests finished.")
+    if os.environ.get("PYTEST_CURRENT_TEST"):
+        print("Skipping standalone tests when running under pytest")
+    else:
+        asyncio.run(test_fetchers())

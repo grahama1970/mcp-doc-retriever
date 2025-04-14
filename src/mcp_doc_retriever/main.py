@@ -21,6 +21,7 @@ Third-Party Documentation:
 - FastAPI: https://fastapi.tiangolo.com/
 - Uvicorn: https://www.uvicorn.org/
 - sse-starlette: https://github.com/sysid/sse-starlette
+- Loguru: https://loguru.readthedocs.io/
 
 Sample Input/Output:
 
@@ -39,47 +40,40 @@ Input (Search):
 Output (Search):
   [{"original_url": "https://example.com/page1", "extracted_content": "...", ...}, ...]
 """
-
-import logging
+import asyncio
+import json
 import os
 import re
 import sys
-from sse_starlette.sse import EventSourceResponse
-import asyncio
-import json
 import time
 import traceback
 import uuid
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
-from typing import Dict, List
 from pathlib import Path
-from concurrent.futures import ThreadPoolExecutor  # Import executor
+from typing import Dict, List
+
 from fastapi import BackgroundTasks, FastAPI, HTTPException
+from loguru import logger
+from sse_starlette.sse import EventSourceResponse
+import os
+# Package imports
+import mcp_doc_retriever.config as config
+from mcp_doc_retriever.utils import is_url_private_or_internal
+from mcp_doc_retriever.downloader.workflow import fetch_documentation_workflow
+from mcp_doc_retriever.downloader.git_downloader import check_git_dependency
+from mcp_doc_retriever.models import DocDownloadRequest, TaskStatus, SearchRequest, SearchResultItem
+from mcp_doc_retriever.searcher.searcher import perform_search
 
-# Assuming the new structure with sub-packages:
-from . import config
-from .utils import is_url_private_or_internal
-from .downloader.workflow import fetch_documentation_workflow
-from .downloader.git_downloader import check_git_dependency
-from .models import DocDownloadRequest, TaskStatus, SearchRequest, SearchResultItem
-
-# Updated import path for searcher
-from .searcher.searcher import perform_search  # Import from searcher.searcher
 
 
-
-# --- Logger Setup ---
-log_format = (
-    "%(asctime)s - %(levelname)s - [%(name)s:%(funcName)s:%(lineno)d] - %(message)s"
-)
-logging.basicConfig(
-    level=logging.INFO, format=log_format, stream=sys.stdout, force=True
-)
-logger_setup = logging.getLogger("main_setup")
-logger_setup.info("Root logger configured.")
-logging.getLogger("httpx").setLevel(logging.WARNING)
-logging.getLogger("websockets").setLevel(logging.WARNING)
-# --------------------
+# Configure Loguru with main handler and filter external modules
+logger.configure(handlers=[{
+    "sink": sys.stdout,
+    "filter": lambda record: record["extra"].get("name") not in ["httpx", "websockets"]
+}])
+logger.info("Root logger configured.")
+logger.info("Root logger configured.")
 
 
 # --- Global State & Resources ---
@@ -97,7 +91,8 @@ app = FastAPI(
     description="API for downloading and searching documentation.",
     version="1.0.0",
 )
-logger = logging.getLogger(__name__)  # Logger for API endpoints
+# Logger for this module
+logger = logger.bind(module="main")
 
 
 # --- Background Task Wrapper ---
@@ -140,7 +135,7 @@ async def run_download_workflow_task(
             timeout_playwright=play_timeout,
             max_concurrent_requests=50,  # Make configurable?
             executor=shared_executor,  # Pass the shared executor instance
-            logger_override=logging.getLogger("mcp_doc_retriever.downloader.workflow"),
+            logger_override=logger.bind(workflow=download_id),
         )
 
         task_info.status = "completed"
@@ -324,12 +319,9 @@ def usage_example():
     """Demonstrates programmatic usage (runs workflow directly)."""
     # ... (usage_example code remains largely the same, but ensure it creates its own executor
     #      or potentially uses the global one for the example run, managing its lifecycle) ...
-    import asyncio
     import uuid
     import shutil
-    from mcp_doc_retriever.downloader.workflow import fetch_documentation_workflow
-    from mcp_doc_retriever.searcher.searcher import perform_search
-    from mcp_doc_retriever import config
+    # Using imports from above
 
     example_executor = ThreadPoolExecutor(
         max_workers=2, thread_name_prefix="ExampleWorker"
@@ -368,10 +360,27 @@ def usage_example():
             print(f"\nIndex created: {idx_path.is_file()}")
             print("\nTesting Search...")
             try:
-                results = perform_search(test_id, ["H1"], "title", None, test_dir)
+                # Prepare and execute searches
+                search_request_title = SearchRequest(
+                    download_id=test_id,
+                    scan_keywords=["H1"],
+                    extract_selector="title"
+                )
+                
+                search_request_p = SearchRequest(
+                    download_id=test_id,
+                    scan_keywords=["paragraph"],
+                    extract_selector="p"
+                )
+                
+                results = perform_search(search_request_title, test_dir)
                 print(f"Found {len(results)} title results.")
-                results_p = perform_search(test_id, ["paragraph"], "p", None, test_dir)
+                
+                results_p = perform_search(search_request_p, test_dir)
                 print(f"Found {len(results_p)} paragraph results.")
+
+                # Restore working directory
+                os.chdir(Path(test_dir).parent)
             except Exception as e:
                 print(f"Search FAILED: {e}")
                 # If search fails, the overall example might be considered failed
@@ -387,9 +396,7 @@ def usage_example():
              print("✗ Standalone main.py example failed (download part).")
         print("------------------------------------")
 
-    logging.basicConfig(
-        level=logging.INFO, format=log_format, stream=sys.stdout, force=True
-    )
+    # Logging is already configured via config.py
     asyncio.run(run_example())
 
 

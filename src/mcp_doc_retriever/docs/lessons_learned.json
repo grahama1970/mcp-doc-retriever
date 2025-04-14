@@ -2,11 +2,49 @@
   "lessons": [
     {
       "role": "Senior Coder",
+      "problem": "Integration testing between Python and Shell scripts made debugging difficult and time-consuming. Lack of proper debugging tools for shell scripts increased diagnosis time.",
+      "solution": "1. Convert shell-based test runners to Python for better debugging\n2. Use pdb/debugger for step-by-step inspection\n3. Add detailed logging in both Python and shell components\n4. Consider pytest-based integration tests with fixtures",
+      "relevant_for": ["testing", "debugging", "shell_integration", "python"],
+      "tags": ["debugging", "testing", "shell", "python", "integration"],
+      "example": "Instead of shell test runner:\ntest_runner.sh -> test_runner.py with:\n- pytest fixtures for setup/teardown\n- debugger breakpoints\n- structured logging\n- proper exception handling",
+      "date": "2025-04-13"
+    },
+    {
+      "problem": "Shell script JSON payload contained inline comments (# character) which caused invalid JSON errors in API requests. This was particularly hard to spot as the heredoc syntax in bash preserves comments.",
+      "solution": "Never include comments inside JSON payloads in shell scripts, even when using heredoc syntax. Place any necessary documentation as bash comments before the JSON block. For git payloads specifically, ensure doc_path is a clean string without comments.",
+      "relevant_for": ["shell_scripting", "json", "api_testing", "git_integration"],
+      "tags": ["json", "shell_script", "api", "git"],
+      "example": "BAD:\n  payload=$(cat <<EOF\n  {\n    \"doc_path\": \".\", # Comment here breaks JSON\n  }\n  EOF\n  )\n\nGOOD:\n  # Comment about doc_path here\n  payload=$(cat <<EOF\n  {\n    \"doc_path\": \".\"\n  }\n  EOF\n  )",
+      "date": "2025-04-13"
+    },
+    {
+      "role": "Senior Coder",
+      "problem": "CLI script using Typer wasn't properly handling nested commands (download run) and had inconsistent standalone vs module execution modes, leading to CLI argument parsing failures.",
+      "solution": "1. Use Typer's nested command structure (app.add_typer(download_app, name='download'))\n2. Keep __main__ simple, just call app()\n3. Test both 'uv run script.py' and 'uv run -m package.script' modes",
+      "relevant_for": ["cli_design", "typer", "python_packaging"],
+      "tags": ["cli", "typer", "python", "module_design"],
+      "example": "app = typer.Typer()\ndownload_app = typer.Typer()\napp.add_typer(download_app, name='download')\n@download_app.command('run')\ndef download_cmd(): ...\n\nif __name__ == '__main__':\n    app()",
+      "date": "2025-04-13"
+    },
+    {
+      "role": "Senior Coder",
       "problem": "Needed to ensure both standalone execution and module imports work for a script that depends on internal project models",
       "solution": "Define mock versions of required models inside __name__ == '__main__' block, then conditionally use either mock or real models based on how the script is run.",
       "relevant_for": ["module_design", "testing", "code_reuse"],
       "example": "In tree_sitter_extractor.py, mock ContentBlock and ExtractedBlock are defined locally for standalone testing, while the real models are imported from mcp_doc_retriever.models when used as a module.",
       "date": "2025-04-12"
+    },
+    {
+      "_key": "planner_jq_tags_error_20250412195032",
+      "timestamp": "2025-04-12T19:50:32Z",
+      "severity": "WARN",
+      "role": "Planner",
+      "task": "Task 1.6 Completion",
+      "phase": "Handle Task Completion",
+      "problem": "jq query failed when searching lessons_learned.json for tags because an existing lesson object lacked the 'tags' field, resulting in a 'Cannot iterate over null' error.",
+      "solution": "Ensure all lesson objects consistently include a 'tags' field (even if an empty array []) before attempting to iterate over it with jq '.tags[]'. Alternatively, make the jq query more robust to handle missing fields, e.g., using 'select(.tags != null and (.tags[] | contains(...)))'.",
+      "tags": ["jq", "lessons_learned", "json_structure", "planner", "error_handling"],
+      "context": "Attempting to search lessons_learned.json using jq '.lessons[] | select(.tags[] | contains(...))' as part of the standard procedure before marking Task 1.6 complete."
     }
   ]
 }

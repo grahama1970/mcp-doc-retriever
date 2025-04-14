@@ -101,9 +101,9 @@ async def run_git_clone(
     logger.info(f"Attempting to clone '{repo_url}' into '{target_dir_str}'...")
 
     # Define helper for running subprocess in executor
-    async def run_subprocess(cmd: List[str], cwd: Optional[str] = None):
-        logger.debug(
-            f"Running command in executor: {' '.join(cmd)} (cwd: {cwd or 'default'})"
+    async def run_subprocess(cmd: List[str], cwd: Optional[str] = None, operation_tag: str = "git_operation"):
+        logger.info(
+            f"Starting {operation_tag}: {' '.join(cmd)} (cwd: {cwd or 'default'})"
         )
         try:
             # Run the synchronous subprocess call within the executor thread
@@ -122,20 +122,23 @@ async def run_git_clone(
             stdout_log = result.stdout.strip()
             if stdout_log:
                 logger.debug(
-                    f"Command successful: {' '.join(cmd)}. Output:\n{stdout_log[:500]}{'...' if len(stdout_log) > 500 else ''}"
+                    f"Command successful ({operation_tag}): {' '.join(cmd)}. Output:\n{stdout_log[:500]}{'...' if len(stdout_log) > 500 else ''}"
                 )
             else:
-                logger.debug(f"Command successful: {' '.join(cmd)}. (No stdout)")
+                logger.debug(f"Command successful ({operation_tag}): {' '.join(cmd)}. (No stdout)")
+            logger.info(f"Finished {operation_tag}: {' '.join(cmd)}") # Log finish
 
             return result
         except FileNotFoundError:
             # Error if the command itself (e.g., 'git') isn't found
             logger.error(
-                f"Command failed: '{cmd[0]}' not found. Ensure it's installed and in PATH."
+                f"Command failed ({operation_tag}): '{cmd[0]}' not found. Ensure it's installed and in PATH."
             )
+            logger.info(f"Finished {operation_tag} (Error): {' '.join(cmd)}") # Log finish on error
             raise  # Re-raise FileNotFoundError for higher-level handling
         except subprocess.TimeoutExpired:
-            logger.error(f"Command timed out after 300s: {' '.join(cmd)}")
+            logger.error(f"Command timed out after 300s ({operation_tag}): {' '.join(cmd)}")
+            logger.info(f"Finished {operation_tag} (Timeout): {' '.join(cmd)}") # Log finish on error
             raise RuntimeError(f"Git command timed out: {' '.join(cmd)}")
         except subprocess.CalledProcessError as e:
             # Error if the command runs but returns a non-zero exit code
@@ -151,8 +154,9 @@ async def run_git_clone(
             # Log detailed error info from stderr
             stderr_log = e.stderr.strip() if e.stderr else "(No stderr)"
             logger.error(
-                f"Command failed (exit code {e.returncode}): {' '.join(cmd)}. Stderr:\n{stderr_log}"
+                f"Command failed (exit code {e.returncode}) ({operation_tag}): {' '.join(cmd)}. Stderr:\n{stderr_log}"
             )
+            logger.info(f"Finished {operation_tag} (CalledProcessError): {' '.join(cmd)}") # Log finish on error
             # Raise a runtime error including the hint
             raise RuntimeError(
                 f"Git command failed: {' '.join(cmd)}.{error_hint}"
@@ -160,8 +164,9 @@ async def run_git_clone(
         except Exception as e:
             # Catch other potential errors during executor run or subprocess interaction
             logger.error(
-                f"Unexpected error running command {' '.join(cmd)}: {e}", exc_info=True
+                f"Unexpected error running command ({operation_tag}) {' '.join(cmd)}: {e}", exc_info=True
             )
+            logger.info(f"Finished {operation_tag} (Exception): {' '.join(cmd)}") # Log finish on error
             raise RuntimeError(
                 f"Unexpected error during git operation: {' '.join(cmd)}"
             ) from e
@@ -179,9 +184,9 @@ async def run_git_clone(
             # 1. Init repo, add remote, set sparse checkout config
             # Specify initial branch name (e.g., main) for git init if known/desired
             # Using '-b main' might avoid issues if default branch name differs later
-            await run_subprocess(["git", "init", "-b", "main"], cwd=target_dir_str)
+            await run_subprocess(["git", "init", "-b", "main"], cwd=target_dir_str, operation_tag="git_init")
             await run_subprocess(
-                ["git", "remote", "add", "origin", repo_url], cwd=target_dir_str
+                ["git", "remote", "add", "origin", repo_url], cwd=target_dir_str, operation_tag="git_remote_add"
             )
             # Enable sparse checkout functionality (core config is less common now)
             # await run_subprocess(
@@ -189,7 +194,7 @@ async def run_git_clone(
             # )
             # Recommended: Use cone mode via sparse-checkout command
             await run_subprocess(
-                ["git", "sparse-checkout", "init", "--cone"], cwd=target_dir_str
+                ["git", "sparse-checkout", "init", "--cone"], cwd=target_dir_str, operation_tag="git_sparse_init"
             )
 
             # 2. Define the sparse-checkout path(s) using sparse-checkout set
@@ -201,7 +206,7 @@ async def run_git_clone(
             # Set the desired path(s) - overwrites previous set
             await run_subprocess(
                 ["git", "sparse-checkout", "set", sparse_path_pattern],
-                cwd=target_dir_str,
+                cwd=target_dir_str, operation_tag="git_sparse_set"
             )
             logger.debug(
                 f"Set sparse checkout pattern (cone mode) to '{sparse_path_pattern}'"
@@ -229,8 +234,8 @@ async def run_git_clone(
                             "1",
                             "origin",
                             branch,
-                        ],  # Removed --no-tags unless needed
-                        cwd=target_dir_str,
+                        ],
+                        cwd=target_dir_str, operation_tag=f"git_sparse_pull_{branch}"
                     )
                     pull_successful = True
                     logger.info(
@@ -245,7 +250,7 @@ async def run_git_clone(
                                 f"--set-upstream-to=origin/{branch}",
                                 branch,
                             ],
-                            cwd=target_dir_str,
+                            cwd=target_dir_str, operation_tag=f"git_set_upstream_{branch}"
                         )
                     except Exception as track_err:
                         logger.warning(
@@ -324,7 +329,7 @@ async def run_git_clone(
                     "main",
                     repo_url,
                     target_dir_str,
-                ]  # Try main branch first
+                ], operation_tag="git_clone_main"
             )
             logger.info(
                 f"Successfully cloned (branch main) '{repo_url}' to '{target_dir_str}'"
@@ -350,7 +355,7 @@ async def run_git_clone(
                             "master",
                             repo_url,
                             target_dir_str,
-                        ]
+                        ], operation_tag="git_clone_master"
                     )
                     logger.info(
                         f"Successfully cloned (branch master) '{repo_url}' to '{target_dir_str}'"
