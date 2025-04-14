@@ -1,188 +1,105 @@
 """
-Tree-sitter based code file extractor.
+Tree-sitter based code validation.
 
-This module provides basic code parsing and extraction using tree-sitter-language-pack.
-It parses supported file types and extracts their content into ContentBlock objects.
+This module provides code validation using tree-sitter-language-pack.
+It validates code snippets and determines their language.
 
 Links:
 - tree-sitter-language-pack: https://github.com/Goldziher/tree-sitter-language-pack
 
 Sample Input/Output:
-    
-Input:
-    # test.py
-    def hello(name):
-        print(f"Hello {name}")
+    Input:
+        code = '''
+        def hello():
+            print("Hello")
+        '''
+        lang_hint = "python"
         
-    class TestClass:
-        def method(self):
-            pass
-
-Output:
-    [
-        ContentBlock(
-            content="def hello(name):\n    print(f\"Hello {name}\")",
-            language="python",
-            type="code",
-            metadata={
-                "selector": "function_definition",
-                "name": "hello",
-                "start_line": 1,
-                "end_line": 2
-            }
-        ),
-        ContentBlock(
-            content="class TestClass:\n    def method(self):\n        pass",
-            language="python", 
-            type="code",
-            metadata={
-                "selector": "class_definition",
-                "name": "TestClass",
-                "start_line": 4,
-                "end_line": 6
-            }
-        )
-    ]
+    Output:
+        (True, "python")  # Valid Python code
 """
 
-from pathlib import Path
-from typing import List, Optional
+from typing import Optional, Tuple
 from tree_sitter_language_pack import get_parser
-from pydantic import BaseModel, Field
 from loguru import logger
 
-# Define mock models for standalone testing
-if __name__ == "__main__":
-    class MockContentBlock(BaseModel):
-        """Minimal ContentBlock implementation for standalone testing."""
-        content: str
-        language: str
-        type: str
-        metadata: dict
 
-    class MockExtractedBlock(BaseModel):
-        """Mock ExtractedBlock for standalone testing."""
-        type: str = Field(description="Tree-sitter node type (e.g., 'function_definition')")
-        name: Optional[str] = Field(None, description="Identifier name (e.g., function/class name)")
-        content: str = Field(description="Full source code of the block")
-        start_line: int = Field(gt=0, description="Starting line number (1-based)")
-        end_line: int = Field(gt=0, description="Ending line number (1-based)")
-
-    ContentBlock = MockContentBlock
-    ExtractedBlock = MockExtractedBlock
-else:
-    from mcp_doc_retriever.models import ContentBlock, ExtractedBlock
-
-def extract_blocks_from_file(file_path: str, language: str) -> List[ContentBlock]:
-    """Extract code blocks from a source file using tree-sitter.
+def validate_code_snippet(code: str, lang_hint: Optional[str] = None) -> Tuple[bool, Optional[str]]:
+    """Validate a code snippet using tree-sitter and determine its language.
     
     Args:
-        file_path: Path to the source file
-        language: Language identifier (e.g., 'python', 'javascript')
+        code: The code snippet to validate
+        lang_hint: Optional language hint (e.g., 'python', 'javascript')
         
     Returns:
-        List of ContentBlock objects containing the extracted code
+        Tuple of (is_valid, detected_language)
+        - is_valid: True if code is valid in any supported language
+        - detected_language: The language name if validation succeeded, None otherwise
     """
-    try:
-        parser = get_parser(language)
-    except Exception as e:
-        logger.warning(f"Failed to get parser for language {language}: {e}")
-        return []
-
-    try:
-        with open(file_path, 'rb') as f:
-            content = f.read()
-    except Exception as e:
-        logger.error(f"Failed to read file {file_path}: {e}")
-        return []
-
-    try:
-        tree = parser.parse(content)
-    except Exception as e:
-        logger.error(f"Failed to parse {file_path}: {e}")
-        return []
-    
-    extracted_blocks: List[ExtractedBlock] = []
-    
-    def visit_node(node) -> None:
-        """Extract relevant nodes from the syntax tree."""
-        # Common node types across languages that we want to extract
-        if node.type in {
-            # Python
-            'function_definition',
-            'class_definition',
-            # JavaScript
-            'function_declaration',
-            'class_declaration',
-            'method_definition',
-            # Java
-            'method_declaration',
-            'class_declaration',
-        }:
-            # Find the name node (usually the first identifier child)
-            name_node = None
-            for child in node.children:
-                if child.type == 'identifier':
-                    name_node = child
-                    break
-            
-            name = name_node.text.decode('utf-8') if name_node else None
-            content = node.text.decode('utf-8')
-            
-            try:
-                block = ExtractedBlock(
-                    type=node.type,
-                    name=name,
-                    content=content,
-                    start_line=node.start_point[0] + 1,  # Convert to 1-based line numbers
-                    end_line=node.end_point[0] + 1
-                )
-                extracted_blocks.append(block)
-            except Exception as e:
-                logger.warning(f"Failed to create ExtractedBlock: {e}")
+    if not code or not code.strip():
+        return False, None
         
-        # Recurse into children
-        for child in node.children:
-            visit_node(child)
+    # Try the hinted language first if provided
+    if lang_hint:
+        lang_hint = lang_hint.lower()
+        # Handle special cases
+        if lang_hint == "js":
+            lang_hint = "javascript"
+        elif lang_hint == "ts":
+            lang_hint = "typescript"
+            
+        try:
+            parser = get_parser(lang_hint)
+            tree = parser.parse(code.encode())
+            if not tree.root_node.has_error:
+                return True, lang_hint
+        except Exception as e:
+            logger.debug(f"Validation failed for hinted language {lang_hint}: {e}")
     
-    visit_node(tree.root_node)
+    # Try common languages if hint fails or isn't provided
+    common_languages = ["python", "javascript", "typescript", "java", "go", "ruby"]
     
-    # Convert ExtractedBlock to ContentBlock
-    content_blocks = []
-    for block in extracted_blocks:
-        content_blocks.append(ContentBlock(
-            content=block.content,
-            language=language,
-            type='code',
-            metadata={
-                'selector': block.type,
-                'name': block.name,
-                'start_line': block.start_line,
-                'end_line': block.end_line,
-                'source_file': str(Path(file_path).name)
-            }
-        ))
-    
-    return content_blocks
+    for lang in common_languages:
+        if lang == lang_hint:
+            continue  # Already tried this one
+        try:
+            parser = get_parser(lang)
+            tree = parser.parse(code.encode())
+            if not tree.root_node.has_error:
+                return True, lang
+        except Exception as e:
+            logger.debug(f"Validation failed for language {lang}: {e}")
+            
+    return False, None
+
 
 if __name__ == "__main__":
-    # Simple test with a Python file
-    test_content = '''
-def hello(name):
-    print(f"Hello {name}")
-
-class TestClass:
-    def method(self):
-        pass
+    # Test valid Python code
+    test_py = '''
+def hello():
+    print("Hello")
 '''
-    import tempfile
-    with tempfile.NamedTemporaryFile(mode='w', suffix='.py') as f:
-        f.write(test_content)
-        f.flush()
-        
-        blocks = extract_blocks_from_file(f.name, 'python')
-        print(f"\nFound {len(blocks)} blocks in test file:")
-        for block in blocks:
-            print(f"\n- {block.metadata['selector']}: {block.metadata['name']}")
-            print(f"  Lines {block.metadata['start_line']}-{block.metadata['end_line']}")
-            print(f"  Content preview: {block.content[:60]}...")
+    is_valid, lang = validate_code_snippet(test_py, "python")
+    print(f"Valid Python test: {is_valid}, lang={lang}")
+    assert is_valid and lang == "python"
+    
+    # Test valid JavaScript code
+    test_js = '''
+function hello() {
+    console.log("Hello");
+}
+'''
+    is_valid, lang = validate_code_snippet(test_js, "javascript")
+    print(f"Valid JavaScript test: {is_valid}, lang={lang}")
+    assert is_valid and lang == "javascript"
+    
+    # Test invalid code
+    test_invalid = '''
+def broken_function(
+    print("Missing closing parenthesis"
+'''
+    is_valid, lang = validate_code_snippet(test_invalid, "python")
+    print(f"Invalid code test: {is_valid}, lang={lang}")
+    assert not is_valid
+    
+    print("All tests passed!")

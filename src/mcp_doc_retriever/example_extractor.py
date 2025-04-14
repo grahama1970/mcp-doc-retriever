@@ -23,10 +23,11 @@ import os
 # import json
 import logging
 from typing import Optional, List
-from mcp_doc_retriever.utils import (
-    extract_content_blocks_from_html,
-    extract_content_blocks_from_markdown,
-)
+from mcp_doc_retriever.searcher.helpers import extract_content_blocks_from_html
+from mcp_doc_retriever.searcher.markdown_extractor import extract_content_blocks_with_markdown_it
+
+# Import ContentBlock for type hints
+from mcp_doc_retriever.models import ContentBlock
 # from mcp_doc_retriever.models import ContentBlock
 
 logger = logging.getLogger(__name__)
@@ -66,8 +67,8 @@ def extract_and_index_examples(
                     with open(fpath, "r", encoding="utf-8", errors="ignore") as f:
                         content = f.read()
                     if ext in [".md", ".markdown"]:
-                        blocks = extract_content_blocks_from_markdown(content, source_url=fpath)
-                    else:
+                        blocks = extract_content_blocks_with_markdown_it(content, source_url=fpath)
+                    else:  # HTML files
                         blocks = extract_content_blocks_from_html(content, source_url=fpath)
                     for block in blocks:
                         if block.type == "json" and block.metadata and "parsed_json" in block.metadata:

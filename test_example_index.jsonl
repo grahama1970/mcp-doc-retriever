@@ -1,0 +1,2 @@
+{"type":"json","content":"\n{\n  \"key\": \"value\",\n  \"number\": 42\n}\n    ","language":"json","block_type":"pre > code","start_line":23,"end_line":26,"source_url":"test_data/mixed_content.html","metadata":{"selector":"pre > code","parsed_json":{"key":"value","number":42}}}
+{"type":"json","content":"{\n  \"key\": \"value\",\n  \"number\": 42\n}","language":"json","block_type":"fenced","start_line":24,"end_line":28,"source_url":"test_data/mixed_content.md","metadata":{"selector":"fenced_json","parsed_json":{"key":"value","number":42}}}

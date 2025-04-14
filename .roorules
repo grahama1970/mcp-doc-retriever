@@ -54,6 +54,11 @@ reuse_policy:
 
 # Standard Procedures (Consolidated from Modes)
 - **Error/Ambiguity Handling - Step 1 (Search Lessons Learned):** When encountering errors or ambiguity, **always search** relevant entries in `src/mcp_doc_retriever/docs/lessons_learned.json` first using `jq` via the `command` tool, unless explicitly instructed otherwise. Formulate a `jq` query to filter entries based on relevant keywords from the error message, task context, relevant files, or tools involved.
+    - **Example `jq` Search:** To find lessons tagged with 'debugging' OR containing 'timeout' in the problem description (case-insensitive), use a command like:
+        ```sh
+        jq '.lessons[] | select((.tags[]? | contains("debugging")) or (.problem | test("timeout"; "i")))' src/mcp_doc_retriever/docs/lessons_learned.json
+        ```
+        *(Adapt keywords and file path as needed).*
   # JQ Insert Example in ROO Rules Structure
 
   To append a new project entry to the projects list following roo guidelines, use the command below:
@@ -71,9 +76,14 @@ reuse_policy:
 - **Error/Ambiguity Handling - Step 2 (Code Context):** If searching lessons learned yields no solution, consult relevant documentation for tasks involving code understanding, implementation, or refactoring. This includes:
    a. **Downloaded Documentation:** Check content within the relevant download directory (typically under `/app/downloads/content/` inside the container) if documentation was retrieved using the `doc_download` tool. Use `read_file` or the `doc_search` tool as appropriate.
    b. **Project Documentation:** Check any supplementary documentation stored within the project repository (e.g., in `repo_docs/`).
-- **Error/Ambiguity Handling - Step 3 (External Research):** If project documentation and searching lessons learned are insufficient, use `perplexity-ask` via `mcp` for external research (e.g., library issues, general patterns).
+- **Error/Ambiguity Handling - Step 3 (Locate Project Code):** For **Coder roles only**: If an error indicates a specific function, class, or variable defined *within this project* is undefined or cannot be imported (e.g., `NameError`, `ImportError`), and it wasn't found via Step 2:
+    a. **Use the `search_files` tool** to locate the definition of the specific missing identifier.
+    b. Specify the identifier name as the search query.
+    c. Scope the search primarily to the project's source directory (e.g., `src/mcp_doc_retriever/`).
+    d. If the definition is found, analyze the correct import path or usage. If not found, proceed to the next step.
+- **Error/Ambiguity Handling - Step 4 (External Research):** If project documentation, searching lessons learned, **and searching project files (Step 3)** are insufficient, use `perplexity-ask` via `mcp` for external research (e.g., library issues, general patterns).
  *Note: Custom mode instructions specify the escalation path if these steps fail.*
-- **Error/Ambiguity Handling - Step 4 (Prepare for Human Debugging):** For **Coder roles only** (Intern, Junior, Senior/Code, Refactorer): If, after following steps 1-3, you determine you cannot fix a code execution error, and **you have *not* performed Self-Recovery** (i.e., the problematic code is still present), then **before** you escalate to a human (`ask_human`) or report final failure to your delegator (`Boomerang Mode`):
+- **Error/Ambiguity Handling - Step 5 (Prepare for Human Debugging):** For **Coder roles only** (Intern, Junior, Senior/Code, Refactorer): If, after following steps 1-4, you determine you cannot fix a code execution error, and **you have *not* performed Self-Recovery** (i.e., the problematic code is still present), then **before** you escalate to a human (`ask_human`) or report final failure to your delegator (`Boomerang Mode`):
     a. Identify the primary file(s) and function(s) where the error occurs or originates.
     b. Insert comments formatted precisely as `# VSCODE BREAKPOINT: Brief reason why a breakpoint is helpful here` at strategic locations within the identified code to aid human debugging. Good locations include:
         *   Immediately before the line suspected of causing the error.
@@ -85,7 +95,7 @@ reuse_policy:
 
 # Self-Recovery Procedure: Revert Failed Edits
 - **Self-Recovery Rule:** For all Code-editing roles (`Intern Coder`, `Junior Coder`, `Senior Coder`/`code`, `Refactorer`): If a file editing tool (`apply_diff`, `write_to_file`) results in a clearly failed state, OR if after making edits, subsequent checks (including the Mandatory Post-Edit Standalone Module Verification) reveal the file is broken and you **cannot fix it** after applying standard error handling procedures (KB, docs, reasonable fix attempts), you **MUST** proactively attempt to revert the specific file(s) to their last committed state before reporting failure. Execute `git checkout -- <filename>` (replacing `<filename>` with the actual file path) using the `command` tool for each affected file. Report that you performed this revert action when you subsequently report the failure or escalate.
-- **Note on Interaction:** If self-recovery IS performed, **Error/Ambiguity Handling - Step 4 (Prepare for Human Debugging) is skipped** for that specific failure, as the problematic code state is discarded.
+- **Note on Interaction:** If self-recovery IS performed, **Error/Ambiguity Handling - Step 5 (Prepare for Human Debugging) is skipped** for that specific failure, as the problematic code state is discarded.
 
 # Lesson Logging
 - **Lesson Logging Rule:** If you successfully employ a novel technique, pattern, or workaround not present in the KB, *or* if prompted by your delegator, add a concise lesson learned entry to `src/mcp_doc_retriever/docs/lessons_learned.json`. Clearly state your role in the entry (e.g., 'Role: Junior Coder'). **Note:** Modes `Intern Coder` and `Presenter` do not log lessons. Custom mode instructions specify triggers for logging specific types of lessons (e.g., planning, orchestration, technical).
