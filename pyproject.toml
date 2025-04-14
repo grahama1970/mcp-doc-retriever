@@ -24,6 +24,9 @@ dependencies = [
     "tree-sitter-language-pack>=0.7.1",
 ]
 
+[project.scripts]
+mcp-doc-retriever = "mcp_doc_retriever.cli:app"
+
 [project.optional-dependencies]
 dev = ["ruff"]
 test = [

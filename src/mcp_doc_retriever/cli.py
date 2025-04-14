@@ -265,7 +265,7 @@ def search_command(
 
 
 # --- Main Execution Guard ---
-if __name__ == "__main__":
+if __name__ == "__main__" and len(sys.argv) == 1: # Only run example if no args passed
     # --- Standalone Usage Example ---
     # This block allows running `uv run -m mcp_doc_retriever.cli`
     # to verify basic download workflow orchestration without CLI arguments.
