@@ -9,6 +9,7 @@ using Typer. It defines commands for downloading and potentially searching docum
 
 Third-Party Documentation:
 - Typer: https://typer.tiangolo.com/
+- Loguru: https://loguru.readthedocs.io/
 
 Sample Input/Output:
 Input (Command Line):
@@ -18,9 +19,7 @@ Output (Expected):
   - Downloaded files stored under './downloads/content/my_download_id/'.
   - Index file created at './downloads/index/my_download_id.jsonl'.
 """
-
 import typer
-import logging
 import asyncio
 import re
 import os
@@ -29,6 +28,7 @@ import uuid
 from pathlib import Path
 from typing import Optional, List
 from concurrent.futures import ThreadPoolExecutor
+from loguru import logger
 
 # Import necessary functions/modules from the package
 from .downloader.workflow import fetch_documentation_workflow
@@ -48,22 +48,18 @@ app = typer.Typer(
     no_args_is_help=True,
 )
 
-# --- Logging Configuration ---
-# Configure root logger - basic setup
-log_format = "%(asctime)s - %(levelname)-8s - [%(name)s] %(message)s"
-date_format = "%Y-%m-%d %H:%M:%S"
-logging.basicConfig(
-    level=logging.INFO,
-    format=log_format,
-    datefmt=date_format,
-    stream=sys.stdout,
-    force=True,
+# --- Configure Loguru ---
+# Remove default handler and add custom one
+logger.remove()
+logger.add(
+    sys.stdout,
+    format="<green>{time:YYYY-MM-DD HH:mm:ss}</green> | <level>{level: <8}</level> | <cyan>{name}</cyan>:<cyan>{function}</cyan>:<cyan>{line}</cyan> - <level>{message}</level>",
+    filter=lambda record: record["extra"].get("name") not in ["httpx", "websockets"],
+    level="INFO"
 )
-logger_cli = logging.getLogger("cli")  # Logger for CLI specific messages
 
-# Silence noisy libraries by default
-logging.getLogger("httpx").setLevel(logging.WARNING)
-logging.getLogger("websockets").setLevel(logging.WARNING)
+# Create a named logger for CLI
+logger_cli = logger.bind(name="cli")
 
 # --- Shared ThreadPoolExecutor ---
 # *** Create the executor here in the main CLI entry point ***
@@ -147,17 +143,15 @@ def download_command(
     Parses arguments, performs validation, sets logging, and calls the core workflow.
     """
     # --- Logging Setup (Adjust level based on verbose flag) ---
-    log_level = logging.DEBUG if verbose else logging.INFO
-    root_logger = logging.getLogger()
-    for handler in root_logger.handlers:
-        handler.setLevel(log_level)
-    root_logger.setLevel(log_level)
-    if not verbose:  # Re-silence if needed
-        logging.getLogger("httpx").setLevel(logging.WARNING)
-        logging.getLogger("websockets").setLevel(logging.WARNING)
-    logger_cli.info(
-        f"Log level set to {logging.getLevelName(log_level)} for download '{download_id}'"
+    log_level = "DEBUG" if verbose else "INFO"
+    logger.remove()  # Remove any existing handlers
+    logger.add(
+        sys.stdout,
+        format="<green>{time:YYYY-MM-DD HH:mm:ss}</green> | <level>{level: <8}</level> | <cyan>{name}</cyan>:<cyan>{function}</cyan>:<cyan>{line}</cyan> - <level>{message}</level>",
+        filter=lambda record: record["extra"].get("name") not in ["httpx", "websockets"],
+        level=log_level
     )
+    logger_cli.info(f"Log level set to {log_level} for download '{download_id}'")
     logger_cli.debug(f"Download Arguments: {locals()}")
 
     # --- Argument Validation and Processing (same as before) ---
@@ -219,9 +213,7 @@ def download_command(
                 timeout_playwright=timeout_playwright,
                 max_concurrent_requests=max_concurrent,
                 executor=cli_executor,  # Pass the executor created above
-                logger_override=logging.getLogger(
-                    "mcp_doc_retriever.downloader.workflow"
-                ),
+                logger_override=logger.bind(name="mcp_doc_retriever.downloader.workflow"),
             )
         )
         logger_cli.info(
@@ -229,14 +221,13 @@ def download_command(
         )
 
     except (ValueError, RuntimeError, FileNotFoundError) as e:
-        logger_cli.error(
-            f"Download workflow failed: {e}", exc_info=log_level <= logging.DEBUG
-        )
+        logger_cli.error(f"Download workflow failed: {e}")
+        if logger.level("DEBUG").no >= logger.level(log_level).no:
+            logger_cli.exception("Detailed error:")
         raise typer.Exit(code=1)
     except Exception as e:
-        logger_cli.error(
-            f"Unexpected error during download workflow: {e}", exc_info=True
-        )
+        logger_cli.error(f"Unexpected error during download workflow: {e}")
+        logger_cli.exception("Detailed error:")
         raise typer.Exit(code=1)
     # No finally needed here for executor, managed globally if script exits
 
@@ -284,18 +275,10 @@ if __name__ == "__main__":
     import shutil
     from pathlib import Path
     import asyncio
-    import logging
     from concurrent.futures import ThreadPoolExecutor
 
-    # Basic logging setup for standalone run
-    # Use a distinct logger name to avoid interfering with the main CLI logger if imported
-    standalone_logger = logging.getLogger("standalone_cli_test")
-    if not standalone_logger.handlers: # Avoid adding handlers multiple times if run repeatedly
-         handler = logging.StreamHandler(sys.stdout)
-         formatter = logging.Formatter(log_format, datefmt=date_format)
-         handler.setFormatter(formatter)
-         standalone_logger.addHandler(handler)
-         standalone_logger.setLevel(logging.INFO) # Set desired level for test output
+    # Setup standalone logger using loguru
+    standalone_logger = logger.bind(name="standalone_cli_test")
 
     standalone_logger.info("--- Running Standalone CLI Usage Example (Download Workflow) ---")
 
@@ -337,7 +320,8 @@ if __name__ == "__main__":
         example_passed = True # Mark as passed if no exception
 
     except Exception as e:
-        standalone_logger.error(f"--- Standalone CLI Usage Example FAILED: {e} ---", exc_info=True)
+        standalone_logger.error(f"--- Standalone CLI Usage Example FAILED: {e} ---")
+        standalone_logger.exception("Detailed error:")
         # example_passed remains False
 
     finally:

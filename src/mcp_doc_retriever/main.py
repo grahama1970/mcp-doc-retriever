@@ -73,7 +73,6 @@ logger.configure(handlers=[{
     "filter": lambda record: record["extra"].get("name") not in ["httpx", "websockets"]
 }])
 logger.info("Root logger configured.")
-logger.info("Root logger configured.")
 
 
 # --- Global State & Resources ---
