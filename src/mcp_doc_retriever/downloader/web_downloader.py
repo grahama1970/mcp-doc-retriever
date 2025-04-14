@@ -78,7 +78,10 @@ from mcp_doc_retriever.utils import (
     is_url_private_or_internal,
 )
 from mcp_doc_retriever.downloader.helpers import url_to_local_path
-from mcp_doc_retriever.models import IndexRecord
+from pydantic import BaseModel, Field
+from typing import Literal # List, Optional, Dict, Any, Set already imported
+from mcp_doc_retriever.searcher.helpers import ContentBlock # Import from new location
+# IndexRecord is now defined locally in this file
 
 try:
     # Assume robots.py and fetchers.py are in the same directory
@@ -93,6 +96,9 @@ except ImportError:
     )
 
 logger = logging.getLogger(__name__)
+
+
+from .models import IndexRecord # Import from new downloader models file
 
 # --- Helper Function ---
 
@@ -574,10 +580,32 @@ async def start_recursive_download(
                             f"WORKER {worker_id}: Preparing index record AFTER fetch attempt for {current_canonical_url} with status '{fetch_status}'"
                         )
                         try:
+                            # --- Calculate relative path ---
+                            relative_path_str = ""
+                            if final_local_path_str:
+                                try:
+                                    # Ensure base_dir is absolute for accurate relative_to calculation
+                                    abs_base_dir = base_dir.resolve(strict=False)
+                                    abs_final_local_path = Path(final_local_path_str)
+                                    # Calculate path relative to the main base_dir (containing index/ and content/)
+                                    relative_path = abs_final_local_path.relative_to(abs_base_dir)
+                                    relative_path_str = str(relative_path)
+                                    logger.debug(f"Calculated relative path: {relative_path_str} for absolute: {final_local_path_str}")
+                                except ValueError as rel_err:
+                                    logger.error(f"Failed to make path '{final_local_path_str}' relative to base '{base_dir}': {rel_err}. Storing absolute path as fallback.")
+                                    relative_path_str = final_local_path_str # Fallback to absolute if relative fails
+                                except Exception as path_err:
+                                     logger.error(f"Unexpected error calculating relative path for '{final_local_path_str}' against base '{base_dir}': {path_err}. Storing absolute path as fallback.")
+                                     relative_path_str = final_local_path_str # Fallback
+                            else:
+                                logger.debug(f"final_local_path_str is empty for {current_canonical_url}, storing empty relative path.")
+                                relative_path_str = "" # Ensure empty if final is empty
+
+                            # --- Create IndexRecord using RELATIVE path ---
                             record_to_write = IndexRecord(
                                 original_url=current_canonical_url,
                                 canonical_url=current_canonical_url,
-                                local_path=final_local_path_str,  # Use path determined by fetch outcome
+                                local_path=relative_path_str,  # STORE RELATIVE PATH
                                 content_md5=content_md5,
                                 fetch_status=fetch_status,
                                 http_status=http_status,

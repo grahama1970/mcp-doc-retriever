@@ -58,7 +58,7 @@ try:
         is_url_private_or_internal,
     )
     from mcp_doc_retriever.downloader.helpers import url_to_local_path
-    from mcp_doc_retriever.models import IndexRecord
+    from .models import IndexRecord # Import from new downloader models file
     from mcp_doc_retriever.downloader.fetchers import (
         fetch_single_url_requests,
         fetch_single_url_playwright,
@@ -1523,7 +1523,7 @@ if __name__ == "__main__":
         # Check if fallback imports will be triggered now
         try:
             # Try importing a module that would normally be found
-            from mcp_doc_retriever.models import IndexRecord
+            from .models import IndexRecord # Import from new downloader models file
 
             print("Relative imports seem functional after adding to sys.path.")
         except ImportError:

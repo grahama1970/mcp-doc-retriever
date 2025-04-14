@@ -45,6 +45,18 @@
       "solution": "Ensure all lesson objects consistently include a 'tags' field (even if an empty array []) before attempting to iterate over it with jq '.tags[]'. Alternatively, make the jq query more robust to handle missing fields, e.g., using 'select(.tags != null and (.tags[] | contains(...)))'.",
       "tags": ["jq", "lessons_learned", "json_structure", "planner", "error_handling"],
       "context": "Attempting to search lessons_learned.json using jq '.lessons[] | select(.tags[] | contains(...))' as part of the standard procedure before marking Task 1.6 complete."
+    },
+    {
+      "_key": "planner_human_verification_context_202504141035",
+      "timestamp": "2025-04-14T14:35:25Z",
+      "severity": "INFO",
+      "role": "Planner",
+      "task": "Task 2.5 Human Verification Feedback",
+      "phase": "Handle Task Failure / Planning",
+      "problem": "Human verification tasks (e.g., Task 2.5, 3.4) lacked sufficient context (purpose, specific file paths relative to project root, clear command explanations, context on recent fixes), leading to ambiguity and inefficiency during manual checks.",
+      "solution": "When defining human verification tasks in task.md: explicitly state the goal, provide context on recent changes being verified (linking to previous fixes if applicable), use absolute paths or paths clearly relative to the project root for file checks, explain the purpose/expected outcome of each command, and ensure clarity for the human verifier.",
+      "tags": ["planning", "human_verification", "task_definition", "context", "feedback"],
+      "context": "Received feedback after Task 2.5 failure indicating manual verification steps needed more detail."
     }
   ]
 }

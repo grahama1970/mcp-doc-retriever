@@ -357,6 +357,105 @@ def contains_all_keywords(text: Optional[str], keywords: List[str]) -> bool:
 # Ensure they are NOT present here anymore.
 
 
+
+def get_relative_path(full_path: Path, base_path: Path) -> Optional[str]:
+    """
+    Calculates the relative path of a file with respect to a base directory.
+
+    Args:
+        full_path: The absolute path to the file.
+        base_path: The absolute path to the base directory.
+
+    Returns:
+        The relative path as a string (using forward slashes), or None if
+        the file is not within the base path or an error occurs.
+    """
+    try:
+        # Ensure both paths are absolute for reliable comparison
+        abs_full_path = full_path.resolve()
+        abs_base_path = base_path.resolve()
+        # Calculate relative path
+        relative = abs_full_path.relative_to(abs_base_path)
+        # Return as a string with forward slashes for consistency
+        return relative.as_posix()
+    except ValueError:
+        # This occurs if full_path is not inside base_path
+        logger.warning(f"Path {full_path} is not inside base path {base_path}")
+        return None
+    except Exception as e:
+        logger.error(f"Error calculating relative path for {full_path} from {base_path}: {e}", exc_info=True)
+        return None
+
+
+
+def get_relative_path(full_path: Path, base_path: Path) -> Optional[str]:
+    """
+    Calculates the relative path of a file with respect to a base directory.
+
+    Args:
+        full_path: The absolute path to the file.
+        base_path: The absolute path to the base directory.
+
+    Returns:
+        The relative path as a string (using forward slashes), or None if
+        the file is not within the base path or an error occurs.
+    """
+    try:
+        # Ensure both paths are absolute for reliable comparison
+        abs_full_path = full_path.resolve()
+        abs_base_path = base_path.resolve()
+        # Calculate relative path
+        relative = abs_full_path.relative_to(abs_base_path)
+        # Return as a string with forward slashes for consistency
+        return relative.as_posix()
+    except ValueError:
+        # This occurs if full_path is not inside base_path
+        logger.warning(f"Path {full_path} is not inside base path {base_path}")
+        return None
+    except Exception as e:
+        logger.error(f"Error calculating relative path for {full_path} from {base_path}: {e}", exc_info=True)
+        return None
+
+
+
+import asyncio
+import aiofiles
+
+async def calculate_md5_async(file_path: Path, chunk_size: int = 8192) -> str:
+    """
+    Asynchronously calculates the MD5 hash of a file.
+
+    Args:
+        file_path: The Path object representing the file.
+        chunk_size: The size of chunks to read from the file.
+
+    Returns:
+        The hexadecimal MD5 hash string of the file content.
+
+    Raises:
+        FileNotFoundError: If the file does not exist.
+        IOError: If there's an error reading the file.
+    """
+    hasher = hashlib.md5()
+    try:
+        async with aiofiles.open(file_path, "rb") as f:
+            while True:
+                chunk = await f.read(chunk_size)
+                if not chunk:
+                    break
+                hasher.update(chunk)
+        return hasher.hexdigest()
+    except FileNotFoundError:
+        logger.error(f"File not found for MD5 calculation: {file_path}")
+        raise
+    except IOError as e:
+        logger.error(f"IOError calculating MD5 for {file_path}: {e}")
+        raise
+    except Exception as e:
+        logger.error(f"Unexpected error calculating MD5 for {file_path}: {e}", exc_info=True)
+        raise # Re-raise unexpected errors
+
+
 # --- Example Usage (if run directly) ---
 if __name__ == "__main__":
     print("--- Top-Level Utility Function Examples ---")

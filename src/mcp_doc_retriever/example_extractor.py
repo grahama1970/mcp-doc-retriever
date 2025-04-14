@@ -27,8 +27,8 @@ from mcp_doc_retriever.searcher.helpers import extract_content_blocks_from_html
 from mcp_doc_retriever.searcher.markdown_extractor import extract_content_blocks_with_markdown_it
 
 # Import ContentBlock for type hints
-from mcp_doc_retriever.models import ContentBlock
-# from mcp_doc_retriever.models import ContentBlock
+from mcp_doc_retriever.searcher.helpers import ContentBlock
+# from mcp_doc_retriever.models import ContentBlock # Original import removed
 
 logger = logging.getLogger(__name__)
 

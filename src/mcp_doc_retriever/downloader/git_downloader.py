@@ -80,6 +80,65 @@ def check_git_dependency() -> bool:
         return False
 
 
+async def get_default_branch(repo_url: str, executor: ThreadPoolExecutor) -> str:
+    """
+    Detects the default branch of a remote git repository.
+    
+    Args:
+        repo_url: URL of the git repository
+        executor: ThreadPoolExecutor for running git commands
+        
+    Returns:
+        The default branch name (e.g. 'main', 'master')
+        
+    Raises:
+        RuntimeError: If unable to determine default branch
+    """
+    loop = asyncio.get_running_loop()
+    
+    # First try the modern way using git remote show
+    try:
+        result = await loop.run_in_executor(
+            executor,
+            lambda: subprocess.run(
+                ["git", "remote", "show", repo_url],
+                capture_output=True,
+                text=True,
+                timeout=10
+            )
+        )
+        
+        if result.returncode == 0:
+            # Parse output to find default branch
+            for line in result.stdout.splitlines():
+                if "HEAD branch:" in line:
+                    return line.split(":")[1].strip()
+    except Exception as e:
+        logger.debug(f"Error detecting default branch via git remote show: {e}")
+
+    # Fallback to trying common branch names
+    common_branches = ["main", "master"]
+    for branch in common_branches:
+        try:
+            # Check if branch exists
+            result = await loop.run_in_executor(
+                executor,
+                lambda: subprocess.run(
+                    ["git", "ls-remote", "--heads", repo_url, f"refs/heads/{branch}"],
+                    capture_output=True,
+                    text=True,
+                    timeout=10
+                )
+            )
+            if result.returncode == 0 and result.stdout.strip():
+                return branch
+        except Exception as e:
+            logger.debug(f"Error checking for branch {branch}: {e}")
+            continue
+
+    raise RuntimeError(f"Could not determine default branch for {repo_url}")
+
+
 async def run_git_clone(
     repo_url: str,
     target_dir: Path,
@@ -318,7 +377,15 @@ async def run_git_clone(
         # --- Full Clone ---
         logger.info("Performing full clone (depth 1)...")
         try:
-            # Clone with depth 1 for speed
+            # First try to detect default branch
+            try:
+                default_branch = await get_default_branch(repo_url, executor)
+                logger.info(f"Detected default branch: {default_branch}")
+            except Exception as e:
+                logger.warning(f"Could not detect default branch, falling back to 'main': {e}")
+                default_branch = "main"
+
+            # Clone with depth 1 for speed using detected branch
             await run_subprocess(
                 [
                     "git",
@@ -326,13 +393,13 @@ async def run_git_clone(
                     "--depth",
                     "1",
                     "--branch",
-                    "main",
+                    default_branch,
                     repo_url,
                     target_dir_str,
-                ], operation_tag="git_clone_main"
+                ], operation_tag=f"git_clone_{default_branch}"
             )
             logger.info(
-                f"Successfully cloned (branch main) '{repo_url}' to '{target_dir_str}'"
+                f"Successfully cloned (branch {default_branch}) '{repo_url}' to '{target_dir_str}'"
             )
         except RuntimeError as e_main:
             # If main branch fails, try master (common fallback)

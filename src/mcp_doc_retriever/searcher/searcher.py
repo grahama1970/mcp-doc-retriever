@@ -77,10 +77,56 @@ import json
 import sys
 from pathlib import Path
 from typing import List, Optional, Dict
+from pydantic import BaseModel, Field, field_validator
+from typing import Any, Dict # List, Optional already imported
+from mcp_doc_retriever.searcher.helpers import ContentBlock
 from datetime import datetime, timezone  # Ensure timezone is imported if used
 
+
+# --- Pydantic Models Moved from models.py ---
+
+class SearchRequest(BaseModel):
+    """
+    Request model for searching downloaded content (likely via an API).
+
+    Attributes:
+        download_id: Identifier of the download batch to search within.
+        scan_keywords: List of keywords to initially filter files/pages (at least one required).
+        extract_selector: CSS selector used to extract relevant content blocks (required, non-empty).
+        extract_keywords: Optional list of keywords to further filter extracted blocks.
+        limit: Optional maximum number of results to return.
+    """
+    download_id: str
+    scan_keywords: List[str] = Field(..., min_length=1)
+    extract_selector: str
+    extract_keywords: Optional[List[str]] = None
+    limit: Optional[int] = Field(10, gt=0)
+
+    @field_validator("extract_selector")
+    def check_selector_non_empty(cls, value):
+        if not value or not value.strip():
+            raise ValueError("extract_selector cannot be empty")
+        return value
+
+class SearchResultItem(BaseModel):
+    """
+    Represents a single search result item returned by the search functionality.
+    """
+    original_url: str
+    local_path: str # The absolute path to the local file
+    content_preview: str # A short preview of the matched content
+    match_details: str # The full extracted snippet that matched
+    selector_matched: str # The selector used for extraction
+    # Optional fields from advanced search (not populated by basic search)
+    content_block: Optional[ContentBlock] = None
+    code_block_score: Optional[float] = None
+    json_match_info: Optional[dict] = None
+    search_context: Optional[str] = None
+
+# --- End Pydantic Models Moved from models.py ---
+
 # Use relative imports for models, helpers, and sub-modules
-from mcp_doc_retriever.models import IndexRecord, SearchResultItem, SearchRequest
+from mcp_doc_retriever.downloader.models import IndexRecord
 from mcp_doc_retriever.searcher.helpers import is_allowed_path
 from mcp_doc_retriever.searcher.scanner import scan_files_for_keywords
 from mcp_doc_retriever.searcher.basic_extractor import extract_text_with_selector
@@ -159,7 +205,8 @@ def perform_search(
     # --- Read Index File ---
     if not index_file_path.is_file():
         logger.error(f"Index file not found: {index_file_path}. Cannot perform search.")
-        return []
+        # Raise FileNotFoundError instead of returning empty list
+        raise FileNotFoundError(f"Index file not found: {index_file_path}")
 
     url_map: Dict[Path, str] = {}
     successful_records: List[IndexRecord] = []
@@ -180,33 +227,46 @@ def perform_search(
                     processed_lines += 1
 
                     if record.fetch_status == "success" and record.local_path:
-                        local_file_path = Path(record.local_path)
-                        if not local_file_path.is_absolute():
+                        # --- Reconstruct absolute path from relative path ---
+                        try:
+                            # record.local_path is now expected to be relative to abs_search_base_dir
+                            relative_path_from_index = record.local_path
+                            # Join the absolute base dir with the relative path from the index
+                            abs_local_file_path = abs_search_base_dir.joinpath(relative_path_from_index).resolve(strict=False)
+                            logger.debug(f"Index line {line_num}: Reconstructed absolute path: {abs_local_file_path} from relative: {relative_path_from_index}")
+                        except Exception as path_recon_err:
+                             logger.warning(
+                                f"Index line {line_num}: Failed to reconstruct absolute path from relative '{record.local_path}' and base '{abs_search_base_dir}': {path_recon_err}. Skipping."
+                            )
+                             skipped_records += 1
+                             continue
+
+                        # --- Validate the reconstructed absolute path ---
+                        # Check 1: Is it within the allowed base directory?
+                        if not is_allowed_path(abs_local_file_path, allowed_base_dirs):
                             logger.warning(
-                                f"Index line {line_num}: Non-absolute path '{record.local_path}' found. Skipping."
+                                f"Index line {line_num}: Path '{abs_local_file_path}' is outside allowed base '{abs_search_base_dir}'. Skipping."
                             )
                             skipped_records += 1
                             continue
-                        if not is_allowed_path(local_file_path, allowed_base_dirs):
+                        # Check 2: Does the file actually exist?
+                        if not abs_local_file_path.is_file():
                             logger.warning(
-                                f"Index line {line_num}: Path '{local_file_path}' is outside allowed base '{abs_search_base_dir}'. Skipping."
+                                f"Index line {line_num}: Reconstructed file path not found: {abs_local_file_path}. Skipping."
                             )
                             skipped_records += 1
                             continue
-                        if not local_file_path.is_file():
-                            logger.warning(
-                                f"Index line {line_num}: Indexed file not found: {local_file_path}. Skipping."
-                            )
-                            skipped_records += 1
-                            continue
-                        if local_file_path.suffix.lower() not in SEARCHABLE_EXTENSIONS:
+                        # Check 3: Is it a searchable extension?
+                        if abs_local_file_path.suffix.lower() not in SEARCHABLE_EXTENSIONS:
                             logger.debug(
-                                f"Index line {line_num}: Skipping non-searchable file type: {local_file_path}"
+                                f"Index line {line_num}: Skipping non-searchable file type: {abs_local_file_path}"
                             )
                             skipped_records += 1
                             continue
 
-                        url_map[local_file_path] = record.original_url
+                        # If all checks pass, add the ABSOLUTE path to the map and the record to the list
+                        url_map[abs_local_file_path] = record.original_url
+                        # Store the original record (which contains the relative path)
                         successful_records.append(record)
                     else:
                         skipped_records += 1
@@ -223,16 +283,19 @@ def perform_search(
                     )
                     skipped_records += 1
 
-    except Exception as e:
+    except FileNotFoundError as e: # Catch specifically if open() fails after check
+        logger.error(f"Index file disappeared or cannot be opened: {index_file_path}: {e}", exc_info=True)
+        raise # Re-raise FileNotFoundError to be caught by main.py as 404
+    except Exception as e: # Catch other processing errors
         logger.error(
             f"Failed to open or process index file {index_file_path}: {e}",
             exc_info=True,
         )
-        return []
+        # Raise ValueError for internal processing errors, leading to 500 in main.py
+        raise ValueError(f"Error processing index file {index_file_path}") from e
 
-    successful_paths = [
-        Path(rec.local_path) for rec in successful_records if rec.local_path
-    ]
+    # Get the list of ABSOLUTE paths to scan from the url_map keys
+    successful_paths = list(url_map.keys())
     logger.info(
         f"Index processed. Found {len(successful_paths)} successful file paths from {processed_lines} valid records ({skipped_records} skipped)."
     )
@@ -260,8 +323,9 @@ def perform_search(
     extraction_count = 0
     candidate_path_set = set(candidate_paths)
 
-    for record in successful_records:
-        abs_local_path = Path(record.local_path)
+    # Iterate through the url_map which contains the absolute paths and original URLs
+    # candidate_path_set now contains absolute paths that passed the keyword scan
+    for abs_local_path, original_url in url_map.items():
         if abs_local_path not in candidate_path_set:
             continue
 
@@ -286,11 +350,28 @@ def perform_search(
                     "..." if len(combined_snippet) > 500 else ""
                 )
 
-                # **** CORRECTED VARIABLE NAME ****
+                # --- Prepare data for SearchResultItem ---
+                # Find the original record to get the relative path stored in the index
+                original_record = next((r for r in successful_records if url_map.get(abs_search_base_dir.joinpath(r.local_path).resolve(strict=False)) == original_url), None)
+
+                if original_record and original_record.local_path:
+                    # Use the relative path stored in the found record
+                    relative_path_for_result = original_record.local_path
+                else:
+                    # Fallback: Try to calculate relative path from absolute path if record/path missing
+                    try:
+                        relative_path_for_result = str(abs_local_path.relative_to(abs_search_base_dir))
+                        logger.warning(f"Could not find original record or its relative path for {original_url}. Using calculated relative path: {relative_path_for_result}")
+                    except ValueError:
+                         # Ultimate fallback: Use the absolute path string if relative calculation fails
+                         relative_path_for_result = str(abs_local_path)
+                         logger.error(f"Could not find original record AND failed to calculate relative path for {original_url}. Using absolute path: {relative_path_for_result}")
+
+                # --- Append the result ---
                 search_results.append(
                     SearchResultItem(
-                        original_url=record.original_url,
-                        local_path=record.local_path,
+                        original_url=original_url,
+                        local_path=relative_path_for_result, # Use the determined relative path
                         content_preview=content_preview,
                         match_details=combined_snippet,
                         selector_matched=selector,
@@ -334,32 +415,8 @@ if __name__ == "__main__":
 
     # Mock necessary utils if needed (contains_all_keywords is already handled by try/except)
     # Use the *real* SearchRequest model if possible, otherwise dummy
-    try:
-        from mcp_doc_retriever.models import SearchRequest as RealSearchRequest
-
-        SearchRequestForTest = RealSearchRequest
-        logger.info("Using real SearchRequest model for standalone test.")
-    except ImportError:
-        logger.warning(
-            "Real SearchRequest model not found, using dummy for standalone test."
-        )
-
-        class DummySearchRequest:
-            def __init__(
-                self,
-                download_id,
-                scan_keywords,
-                extract_selector,
-                extract_keywords=None,
-                limit=10,
-            ):
-                self.download_id = download_id
-                self.scan_keywords = scan_keywords
-                self.extract_selector = extract_selector
-                self.extract_keywords = extract_keywords
-                self.limit = limit
-
-        SearchRequestForTest = DummySearchRequest
+    # Use the locally defined SearchRequest for testing
+    SearchRequestForTest = SearchRequest
 
     test_base_dir = Path("./searcher_orchestration_test").resolve()
     logger.info(f"Setting up test directory: {test_base_dir}")
@@ -379,6 +436,8 @@ if __name__ == "__main__":
 
     index_file = index_dir / f"{download_id_test}.jsonl"
     with index_file.open("w", encoding="utf-8") as f:
+        # IndexRecord is imported from web_downloader
+        # IndexRecord is imported from downloader.models
         rec = IndexRecord(
             original_url="http://example.com/test_file",
             canonical_url="http://example.com/test_file",

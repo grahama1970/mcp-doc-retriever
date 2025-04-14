@@ -15,7 +15,8 @@ from pathlib import Path
 from typing import List, Optional, Dict, Any, Union # Added Union
 
 # Use relative imports for models, helpers, and utils
-from mcp_doc_retriever.models import SearchResultItem, ContentBlock
+from mcp_doc_retriever.searcher.searcher import SearchResultItem
+from mcp_doc_retriever.searcher.helpers import ContentBlock
 from mcp_doc_retriever.searcher.helpers import (
     read_file_with_fallback,
     extract_content_blocks_from_html, # Keep for HTML

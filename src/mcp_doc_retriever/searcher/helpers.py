@@ -13,6 +13,8 @@ import re
 import sys  # <-- CHANGE: Added import sys
 from pathlib import Path
 from typing import List, Optional, Dict, Any, Set, Tuple
+from pydantic import BaseModel
+from typing import Literal, Optional, Dict, Any, Set, Tuple # List already imported
 
 # Use try-except for bs4 import to make it optional at runtime if needed
 try:
@@ -31,20 +33,40 @@ except ImportError:
 
 
 # Import necessary models and utils from parent/sibling packages
-try:
-    from mcp_doc_retriever.models import ContentBlock
-except ImportError:
-    # Mock for standalone testing if models aren't available
-    print(
-        "Warning: Could not import ContentBlock from models. Assuming mock needed for standalone test."
-    )
-
-    class ContentBlock:  # type: ignore
-        def __init__(self, **kwargs):
-            self.__dict__.update(kwargs)
+# ContentBlock is now defined locally in this file
 
 # --- CHANGE: REMOVED local contains_all_keywords definition and mock ---
 # The entire function definition that was previously here is GONE.
+
+
+# --- Pydantic Model Moved from models.py ---
+
+class ContentBlock(BaseModel):
+    """
+    Represents a block of extracted content (code, json, or text) with metadata.
+    Used within IndexRecord.
+
+    Attributes:
+        type: "code", "json", or "text".
+        content: The extracted content string.
+        language: Programming language (if applicable, e.g., "python", "json").
+        block_type: Source block type (e.g., "pre", "code", "markdown_fence").
+        start_line: Line number in the source document where the block starts (if available).
+        end_line: Line number in the source document where the block ends (if available).
+        source_url: URL of the source document.
+        metadata: Additional metadata (e.g., parsed_json, selector, etc.).
+    """
+
+    type: Literal["code", "json", "text"]
+    content: str
+    language: Optional[str] = None
+    block_type: Optional[str] = None
+    start_line: Optional[int] = None
+    end_line: Optional[int] = None
+    source_url: Optional[str] = None  # Use str, AnyHttpUrl might be too strict if derived internally
+    metadata: Optional[Dict[str, Any]] = None
+
+# --- End Pydantic Model Moved from models.py ---
 
 logger = logging.getLogger(__name__)
 
@@ -732,12 +754,7 @@ if __name__ == "__main__":
             print("WARNING: Using MOCK contains_all_keywords function.")
             return False  # Mock behavior
 
-    # Minimal dummy ContentBlock if models not available (already handled by try/except above)
-    if "ContentBlock" not in globals():
-
-        class ContentBlock:
-            def __init__(self, **kwargs):
-                self.__dict__.update(kwargs)
+    # ContentBlock is now defined locally, no need for dummy
 
     with tempfile.TemporaryDirectory() as tmpdir:
         base_dir = Path(tmpdir).resolve()

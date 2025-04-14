@@ -15,7 +15,7 @@ from markdown_it.token import Token
 
 # Use relative imports assuming standard package structure
 try:
-    from mcp_doc_retriever.models import ContentBlock
+    from mcp_doc_retriever.searcher.helpers import ContentBlock
 
     # Import helpers needed within this module
     from mcp_doc_retriever.searcher.helpers import _is_json_like, _find_block_lines
@@ -27,9 +27,7 @@ except ImportError:
     )
 
     # Define dummy classes/functions if necessary for basic loading
-    class ContentBlock:
-        def __init__(self, **kwargs):
-            self.__dict__.update(kwargs)
+    # Mock ContentBlock removed as it should be importable from helpers
 
     def _is_json_like(text: str) -> bool:
         return False
@@ -274,7 +272,7 @@ if __name__ == "__main__":
 
     # Re-import ContentBlock here to ensure it's available after path setup
     try:
-        from mcp_doc_retriever.models import ContentBlock
+        from mcp_doc_retriever.searcher.helpers import ContentBlock
         from mcp_doc_retriever.searcher.helpers import (
             _is_json_like,
             _find_block_lines,
@@ -283,9 +281,7 @@ if __name__ == "__main__":
         print("ERROR: Failed to import ContentBlock or helpers even after path setup.")
 
         # Define dummy again if needed
-        class ContentBlock:
-            def __init__(self, **kwargs):
-                self.__dict__.update(kwargs)
+        # Mock ContentBlock removed
 
         def _is_json_like(text: str) -> bool:
             return False

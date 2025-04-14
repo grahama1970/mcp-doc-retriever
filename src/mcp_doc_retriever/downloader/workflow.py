@@ -57,6 +57,8 @@ import asyncio
 import logging
 import shutil
 from pathlib import Path
+import json
+import aiofiles
 from typing import Optional, Set
 from concurrent.futures import ThreadPoolExecutor
 
@@ -69,6 +71,8 @@ from .web_downloader import start_recursive_download
 from mcp_doc_retriever.utils import (
     TIMEOUT_REQUESTS,
     TIMEOUT_PLAYWRIGHT,
+    calculate_md5_async,
+    get_relative_path,
 )  # Default timeouts
 
 
@@ -193,6 +197,8 @@ async def fetch_documentation_workflow(
         )
         total_files = len(files_to_process)
 
+        index_file_path = index_dir / f"{download_id}.jsonl" # Define index file path
+
         pbar_git_desc = f"Processing git files ({download_id})"
         pbar_git = tqdm(
             total=total_files,
@@ -202,11 +208,39 @@ async def fetch_documentation_workflow(
             disable=(total_files == 0),
         )
         try:
-            for file_path in files_to_process:
-                # TODO: Implement actual file processing (copying, indexing, etc.)
-                # Example: await process_git_file_async(file_path, content_base_dir, index_dir / f"{download_id}_git.jsonl")
-                await asyncio.sleep(0.005)  # Simulate async work per file
-                pbar_git.update(1)
+            # Open the index file once for appending all records
+            async with aiofiles.open(index_file_path, mode="a", encoding="utf-8") as afp:
+                for file_path in files_to_process:
+                    try:
+                        # Calculate relative path from the overall base_dir
+                        relative_path = get_relative_path(file_path, base_dir)
+                        if relative_path is None:
+                            _logger.warning(f"Could not determine relative path for {file_path} based on {base_dir}, skipping index.")
+                            pbar_git.update(1)
+                            continue
+
+                        # Calculate MD5 hash asynchronously
+                        content_md5 = await calculate_md5_async(file_path)
+
+                        # Construct index record
+                        index_record = {
+                            "original_url": f"git:{repo_url}:{file_path.relative_to(repo_clone_path)}", # Indicate source
+                            "canonical_url": file_path.as_uri(), # Use file URI as canonical
+                            "local_path": relative_path, # Path relative to base_dir
+                            "content_md5": content_md5,
+                            "fetch_status": "success", # Assume success if scanned
+                            "http_status": None, # Not applicable for git files
+                        }
+
+                        # Write record to index file (JSON Lines format)
+                        await afp.write(json.dumps(index_record) + "\n")
+
+                    except Exception as e:
+                        _logger.error(f"Error processing git file {file_path} for indexing: {e}", exc_info=True)
+                        # Optionally write an error record? For now, just log and continue.
+                    finally:
+                         pbar_git.update(1) # Ensure progress bar updates even on error
+
         finally:
             pbar_git.close()
 

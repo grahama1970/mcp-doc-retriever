@@ -51,7 +51,16 @@ import uuid
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, List
+from typing import Dict, List, Optional
+from pydantic import (
+    BaseModel,
+    Field,
+    field_validator,
+    AnyHttpUrl,
+    model_validator,
+    ConfigDict,
+)
+from typing import Literal, Any # Literal and Any are also needed
 
 from fastapi import BackgroundTasks, FastAPI, HTTPException
 from loguru import logger
@@ -62,9 +71,116 @@ import mcp_doc_retriever.config as config
 from mcp_doc_retriever.utils import is_url_private_or_internal
 from mcp_doc_retriever.downloader.workflow import fetch_documentation_workflow
 from mcp_doc_retriever.downloader.git_downloader import check_git_dependency
-from mcp_doc_retriever.models import DocDownloadRequest, TaskStatus, SearchRequest, SearchResultItem
+from mcp_doc_retriever.searcher.searcher import SearchRequest, SearchResultItem
 from mcp_doc_retriever.searcher.searcher import perform_search
 
+
+
+# --- Pydantic Models Moved from models.py ---
+
+class DocDownloadRequest(BaseModel):
+    """
+    Defines the expected request body for an API endpoint that triggers a download.
+    Validates conditional requirements based on source_type.
+    """
+    source_type: Literal["git", "website", "playwright"]
+    # Git fields
+    repo_url: Optional[AnyHttpUrl] = None
+    doc_path: Optional[str] = None
+    # Website/Playwright fields
+    url: Optional[AnyHttpUrl] = None
+    # Common fields
+    download_id: Optional[str] = Field(
+        None, description="Optional client-provided unique ID. If not provided, the server will generate one."
+    )
+    depth: Optional[int] = Field(None, ge=0, description="Crawling depth for website/playwright")
+    force: Optional[bool] = Field(None, description="Overwrite existing download data")
+
+    @model_validator(mode="after")
+    def check_conditional_fields(self):
+        st = self.source_type
+        if st == "git":
+            if self.url or self.depth is not None:
+                raise ValueError("url and depth are not applicable when source_type is 'git'")
+            if not self.repo_url:
+                raise ValueError("repo_url is required when source_type is 'git'")
+            if self.doc_path is None:
+                self.doc_path = ""  # Default to empty string if not provided
+        elif st in ("website", "playwright"):
+            if self.repo_url or self.doc_path is not None:
+                raise ValueError(
+                    "repo_url and doc_path are not applicable when source_type is 'website' or 'playwright'"
+                )
+            if not self.url:
+                raise ValueError(
+                    "url is required when source_type is 'website' or 'playwright'"
+                )
+            if self.depth is None:
+                self.depth = 5
+        return self
+
+    model_config = ConfigDict(
+        json_schema_extra={
+            "examples": [
+                {
+                    "summary": "Git Example",
+                    "value": {
+                        "source_type": "git",
+                        "repo_url": "https://github.com/pydantic/pydantic",
+                        "doc_path": "docs/",
+                        "download_id": "pydantic_git_docs",
+                    },
+                },
+                {
+                    "summary": "Website Example",
+                    "value": {
+                        "source_type": "website",
+                        "url": "https://docs.pydantic.dev/latest/",
+                        "download_id": "pydantic_web_docs",
+                        "depth": 2,
+                        "force": False,
+                    },
+                },
+                {
+                    "summary": "Playwright Example",
+                    "value": {
+                        "source_type": "playwright",
+                        "url": "https://playwright.dev/python/",
+                        "download_id": "playwright_web_docs",
+                        "depth": 0,
+                    },
+                },
+            ]
+        }
+    )
+
+class TaskStatus(BaseModel):
+    """
+    Response model for querying the status of a background download task via an API.
+    """
+    status: Literal["pending", "running", "completed", "failed"]
+    message: Optional[str] = None
+    start_time: Optional[datetime] = None
+    end_time: Optional[datetime] = None
+    error_details: Optional[str] = None  # Store traceback or error summary if failed
+
+class SearchRequestBody(BaseModel):
+    """
+    Request body model specifically for the POST /search/{download_id} endpoint.
+    Excludes download_id as it's provided in the path.
+    """
+    scan_keywords: List[str] = Field(..., min_length=1)
+    extract_selector: str
+    extract_keywords: Optional[List[str]] = None
+    limit: Optional[int] = Field(10, gt=0)
+
+    @field_validator("extract_selector")
+    def check_selector_non_empty(cls, value):
+        if not value or not value.strip():
+            raise ValueError("extract_selector cannot be empty")
+        return value
+
+# --- End Pydantic Models Moved from models.py ---
 
 
 # Configure Loguru with main handler and filter external modules
@@ -204,12 +320,15 @@ async def download_docs(request: DocDownloadRequest, background_tasks: Backgroun
     else:
         raise HTTPException(status_code=400, detail="Invalid source_type.")
 
-    safe_download_id = re.sub(r"[^\w\-\_]+", "_", request.download_id)
-    if not safe_download_id or len(safe_download_id) < 3:
+    # Generate download_id if not provided
+    if request.download_id is None:
         safe_download_id = f"dl_{uuid.uuid4().hex[:8]}"
-        logger.warning(f"Using generated ID: {safe_download_id}")
-    elif safe_download_id != request.download_id:
-        logger.warning(f"Sanitized ID '{request.download_id}' to '{safe_download_id}'")
+        logger.info(f"Generated download_id: {safe_download_id}")
+    else:
+        # Sanitize if provided
+        safe_download_id = re.sub(r"[^\w\-\_]+", "_", request.download_id)
+        if safe_download_id != request.download_id:
+            logger.warning(f"Sanitized ID '{request.download_id}' to '{safe_download_id}'")
 
     if (
         safe_download_id in DOWNLOAD_TASKS
@@ -246,14 +365,17 @@ async def get_status(download_id: str):
     return task_info
 
 
-@app.post("/search", response_model=List[SearchResultItem])
-async def search_docs(request: SearchRequest):
-    """Searches downloaded content for a completed download ID."""
-    logger.info(f"Search request for: {request.download_id}")
-    task_info = DOWNLOAD_TASKS.get(request.download_id)
+async def _perform_search(
+    download_id: str,
+    scan_keywords: List[str],
+    extract_selector: str,
+    extract_keywords: Optional[List[str]] = None
+) -> List[SearchResultItem]:
+    """Shared search logic used by both GET and POST endpoints."""
+    task_info = DOWNLOAD_TASKS.get(download_id)
     if task_info is None:
         raise HTTPException(
-            status_code=404, detail=f"ID '{request.download_id}' not found."
+            status_code=404, detail=f"ID '{download_id}' not found."
         )
     if task_info.status != "completed":
         raise HTTPException(
@@ -269,32 +391,57 @@ async def search_docs(request: SearchRequest):
                 detail="Server config error: Base download directory not found.",
             )
 
-        # *** Use updated import path for perform_search ***
-        results = perform_search(
-            download_id=request.download_id,
-            scan_keywords=request.scan_keywords,
-            selector=request.extract_selector,
-            extract_keywords=request.extract_keywords,
-            base_dir=base_dir_path,
+        search_request = SearchRequest(
+            download_id=download_id,
+            scan_keywords=scan_keywords,
+            extract_selector=extract_selector,
+            extract_keywords=extract_keywords or [],
+            limit=100  # Default limit
         )
-        logger.info(
-            f"Search for '{request.download_id}' yielded {len(results)} results."
-        )
+        results = perform_search(search_request, base_dir_path)
+        logger.info(f"Search for '{download_id}' yielded {len(results)} results.")
         return results
     except FileNotFoundError as e:
         logger.error(
-            f"Search failed for '{request.download_id}': File not found. {e}",
+            f"Search failed for '{download_id}': File not found. {e}",
             exc_info=True,
         )
+        # Updated detail message for clarity when index is missing
         raise HTTPException(
             status_code=404,
-            detail=f"Search data incomplete/missing for ID '{request.download_id}'.",
+            detail=f"Index file not found for download ID '{download_id}'.",
         )
     except Exception as e:
-        logger.error(f"Search failed for '{request.download_id}': {e}", exc_info=True)
+        logger.error(f"Search failed for '{download_id}': {e}", exc_info=True)
         raise HTTPException(
             status_code=500, detail=f"Internal error during search: {type(e).__name__}"
         )
+
+@app.post("/search", response_model=List[SearchResultItem])
+async def search_docs(request: SearchRequest):
+    """Searches downloaded content for a completed download ID (POST with JSON body)."""
+    logger.info(f"POST search request for: {request.download_id}")
+    return await _perform_search(
+        download_id=request.download_id,
+        scan_keywords=request.scan_keywords,
+        extract_selector=request.extract_selector,
+        extract_keywords=request.extract_keywords
+    )
+
+@app.post("/search/{download_id}", response_model=List[SearchResultItem])
+async def search_docs_get(
+    download_id: str, # download_id comes from the path
+    request_body: SearchRequestBody # Use the new model for the request body
+):
+    """Searches downloaded content for a completed download ID (POST with JSON body)."""
+    logger.info(f"POST search request for: {download_id}")
+    
+    return await _perform_search(
+        download_id=download_id, # Pass download_id from path
+        scan_keywords=request_body.scan_keywords, # Get from request_body
+        extract_selector=request_body.extract_selector, # Get from request_body
+        extract_keywords=request_body.extract_keywords # Get from request_body
+    )
 
 
 @app.get("/health")
