@@ -1,6 +1,15 @@
 # Global Tooling & Execution Rules
 - Always use uv to add packages; do not use pip for installations.
 - We use 'uv run' for executing python and pytest scripts. We do NOT use python directly to execute scripts.
+- **Running Commands with Temporary Environment Variables:** When a task requires running a command with a specific environment variable set *only* for that command's execution (e.g., setting `MCP_TEST_BASE_URL` for pytest), **do not** rely on the simple `VAR=value command args...` syntax, as agent command tools may misinterpret it. **Instead, explicitly use the `env` command:**
+    ```sh
+    env VAR_NAME="var_value" command arg1 arg2...
+    ```
+  - **Example:** To run pytest targeting a local server:
+    ```sh
+    env MCP_TEST_BASE_URL="http://localhost:8005" uv run pytest -v -s tests/test_mcp_retriever_e2e_loguru.py
+    ```
+  - This ensures the variable (`MCP_TEST_BASE_URL`) is correctly set in the environment specifically for the `uv run pytest` process.
 
 # General Coding & Development Principles
 - For all Code-specific roles: Be proactive when coding. Try to fix failed tests and code. Do NOT simply report back that the tests/code failed. Iterate until you fix the code, **starting with standalone script execution (see rule below)**. Follow your protocol.
@@ -51,6 +60,14 @@ reuse_policy:
   3. If new packages found:
      - Submit `security_review_request.json`
      - Await Architect approval
+- **Mandatory Server Readiness Verification:** For **any** agent role: **Immediately after successfully executing a command** intended to start a background web server (e.g., `uvicorn`, `gunicorn`, potentially `docker compose up -d` if testing relies on immediate API availability), and **before** proceeding with any task that relies on that server being responsive (e.g., running API tests, sending requests):
+    a. **Identify Target Endpoint:** Determine the base URL (e.g., `http://localhost:8005`) and a simple, reliable health-check or documentation endpoint (preferred: `/health`, fallback: `/docs` or `/openapi.json`).
+    b. **Perform HTTP Polling:** Use available tools (`requests` via Python script/tool, `curl` via `command`, etc.) to repeatedly send a GET request to the target endpoint.
+    c. **Polling Parameters:** Poll every **2 seconds** for a maximum of **30 seconds** (adjust timeouts as needed).
+    d. **Success Condition:** Proceed **only** when a successful HTTP response (typically status code 200 OK) is received from the target endpoint.
+    e. **Failure Condition:** If a successful response is not received within the timeout, the server is considered not ready. The agent **MUST** treat this as a failure of the server startup step.
+    f. **Error Handling:** Handle potential connection errors during polling gracefully (e.g., log them but continue polling until timeout).
+    g. **Logging:** Log the start of polling, each attempt (or status changes), and the final success or timeout result.
 
 # Standard Procedures (Consolidated from Modes)
 - **Error/Ambiguity Handling - Step 1 (Search Lessons Learned):** When encountering errors or ambiguity, **always search** relevant entries in `src/mcp_doc_retriever/docs/lessons_learned.json` first using `jq` via the `command` tool, unless explicitly instructed otherwise. Formulate a `jq` query to filter entries based on relevant keywords from the error message, task context, relevant files, or tools involved.

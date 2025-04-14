@@ -28,7 +28,22 @@ logger.add(
 BASE_URL = os.environ.get(
     "MCP_TEST_BASE_URL", "http://localhost:8001"
 )  # Will change for local tests
-# ... other constants ...
+# Project paths
+PROJECT_ROOT = Path(__file__).parent.parent
+HOST_CLI_TEST_DIR = PROJECT_ROOT / "test_cli_dir"
+
+# Docker container configuration
+CONTAINER_NAME = "mcp-doc-retriever-app"
+CONTAINER_DOWNLOADS_BASE = "/app/downloads"
+CONTAINER_CONTENT_DIR = f"{CONTAINER_DOWNLOADS_BASE}/content"
+CONTAINER_INDEX_DIR = f"{CONTAINER_DOWNLOADS_BASE}/index"
+
+# Test behavior configuration
+REQUEST_TIMEOUT = 30  # seconds - Default timeout for API requests
+KEEP_CONTAINER = False  # Set to True to keep container running after tests
+KEEP_DOWNLOADS = False  # Set to True to preserve downloaded files after tests
+
+SHARED_STATE = {}  # For sharing data between test cases if needed
 SHARED_STATE = {}
 
 # --- NEW Loguru-based Helper Functions ---
@@ -223,10 +238,10 @@ def docker_setup_teardown(request):
     """Manages Docker container start/stop and cleanup for the test session with Loguru."""
     logger.info("--- Starting E2E Test Session Setup ---")
 
-    # Check if Docker tests should run (maybe via marker or env var later)
-    run_docker_tests = True  # Assume yes for now, can make configurable
-
-    if run_docker_tests:
+    # For local API testing, we don't need Docker setup
+    run_docker_tests = False  # Skip Docker setup when testing local API
+    
+    if run_docker_tests:  # This block won't execute for local testing
         logger.info("Docker tests enabled: Performing Docker setup.")
 
         logger.info("Starting STEP: Cleaning up host directories")
