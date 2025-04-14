@@ -57,6 +57,18 @@
       "solution": "When defining human verification tasks in task.md: explicitly state the goal, provide context on recent changes being verified (linking to previous fixes if applicable), use absolute paths or paths clearly relative to the project root for file checks, explain the purpose/expected outcome of each command, and ensure clarity for the human verifier.",
       "tags": ["planning", "human_verification", "task_definition", "context", "feedback"],
       "context": "Received feedback after Task 2.5 failure indicating manual verification steps needed more detail."
+    },
+    {
+      "_key": "planner_test_script_confusion_202504141850",
+      "timestamp": "2025-04-14T22:50:48Z",
+      "severity": "WARN",
+      "role": "Planner",
+      "task": "Task 2.1 Completion / Phase 2 Reset",
+      "phase": "Planning / Task Definition",
+      "problem": "Confusion arose regarding which test script to use for local vs. Docker E2E testing. `scripts/test_runner.sh` (intended for Docker) was mistakenly associated with local testing failures, leading to incorrect debugging focus. The plan (task.md) lacked explicit clarification on the distinct roles of `pytest tests/test_mcp_retriever_e2e_loguru.py` (local) and `scripts/test_runner.sh` (Docker).",
+      "solution": "Explicitly document the purpose and target environment for each E2E testing script within `task.md`. Task 2.2 should specify using `pytest` against the local server (port 8005), while Task 3.3 should specify using `scripts/test_runner.sh` against the Docker container (port 8001). Added a note in Phase 2 of `task.md` for clarity.",
+      "tags": ["planning", "testing", "e2e", "docker", "local_development", "task_definition", "clarity"],
+      "context": "User reported debugging issues with `test_runner.sh` against the local server. Analysis revealed the script targets Docker. `task.md` was updated to clarify script usage and reset Phase 2 for proper local validation."
     }
   ]
 }
