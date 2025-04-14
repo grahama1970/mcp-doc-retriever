@@ -1,27 +1,78 @@
-# Ignore Python virtual environments
-.venv
+# Python cache files
 __pycache__/
 *.pyc
 *.pyo
 *.pyd
+.Python
 
-# Ignore downloads and build artifacts
-downloads/
+# Virtual environments
+env/
+venv/
+.venv/
+ENV/
+env.bak/
+venv.bak/
+
+# Git files
+.git/
+.gitignore
+.gitattributes
+
+# Docker specific files
+.dockerignore
+Dockerfile*
+
+# IDE/Editor folders
+.idea/
+.vscode/
+*.sublime-project
+*.sublime-workspace
+
+# Test outputs & artifacts
+htmlcov/
+.coverage*
+.pytest_cache/
+cli_test_outputs*/
+manual_cli_test/
+local_cli_downloads/
+nosetests.xml
+coverage.xml
+*.cover
+*.log
+test-results/
+tests/ # Ignore the whole tests directory for the final image
+
+# Build artifacts
 build/
 dist/
-.eggs/
 *.egg-info/
+pip-wheel-metadata/
+*.tar.gz
+*.whl
 
-# Ignore test data and examples
-tests/outputs/
-examples/
-tests/fixtures/
-# Ignore git
-.git
-.gitignore
-
-# Ignore IDE/editor configs
-.vscode/
-*.swp
-*.swo
+# OS-specific
 .DS_Store
+Thumbs.db
+
+# Other config/secrets not for image
+*.env
+# config.json # Ignore config.json if it contains secrets or is mounted/env vars used instead.
+            # If it ONLY contains non-sensitive defaults and should be baked in, remove this ignore line AND ensure the COPY command in Dockerfile is active.
+
+# Node specific (if any JS tools crept in)
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+package-lock.json
+yarn.lock
+
+# Other potentially large files/dirs or files not needed in runtime image
+repo_docs/ # Usually large and not needed at runtime
+scripts/   # Test/utility scripts usually not needed at runtime
+*.db
+*.sqlite3
+*.bak
+task.md    # Task planning file
+README.md  # Main readme often not needed in image
+# Add any other top-level files/dirs not needed in the final image

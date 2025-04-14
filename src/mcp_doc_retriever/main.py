@@ -169,16 +169,17 @@ class SearchRequestBody(BaseModel):
     Request body model specifically for the POST /search/{download_id} endpoint.
     Excludes download_id as it's provided in the path.
     """
-    scan_keywords: List[str] = Field(..., min_length=1)
-    extract_selector: str
+    query: Optional[str] = None # Added to support simple query
+    scan_keywords: Optional[List[str]] = None # Made optional
+    extract_selector: Optional[str] = None # Made optional
     extract_keywords: Optional[List[str]] = None
     limit: Optional[int] = Field(10, gt=0)
 
-    @field_validator("extract_selector")
-    def check_selector_non_empty(cls, value):
-        if not value or not value.strip():
-            raise ValueError("extract_selector cannot be empty")
-        return value
+    # Validator removed as field is optional
+    # def check_selector_non_empty(cls, value):
+    #     if not value or not value.strip():
+    #         raise ValueError("extract_selector cannot be empty")
+    #     return value
 
 # --- End Pydantic Models Moved from models.py ---
 
@@ -436,11 +437,31 @@ async def search_docs_get(
     """Searches downloaded content for a completed download ID (POST with JSON body)."""
     logger.info(f"POST search request for: {download_id}")
     
+    # Determine search parameters based on request body content
+    scan_kw: Optional[List[str]] = None
+    selector: Optional[str] = None
+
+    if request_body.query:
+        logger.info(f"Using simple query parameter: '{request_body.query}'")
+        scan_kw = [request_body.query]
+        selector = "body" # Default selector for simple query
+    elif request_body.scan_keywords and request_body.extract_selector:
+        logger.info("Using scan_keywords and extract_selector parameters.")
+        scan_kw = request_body.scan_keywords
+        selector = request_body.extract_selector
+    else:
+        # Neither simple query nor specific fields provided correctly
+        raise HTTPException(
+            status_code=422,
+            detail="Request must contain either a 'query' field or both 'scan_keywords' and 'extract_selector'."
+        )
+
+    # Call the internal search function with the determined parameters
     return await _perform_search(
-        download_id=download_id, # Pass download_id from path
-        scan_keywords=request_body.scan_keywords, # Get from request_body
-        extract_selector=request_body.extract_selector, # Get from request_body
-        extract_keywords=request_body.extract_keywords # Get from request_body
+        download_id=download_id,
+        scan_keywords=scan_kw,
+        extract_selector=selector,
+        extract_keywords=request_body.extract_keywords # Pass this through if provided
     )
 
 

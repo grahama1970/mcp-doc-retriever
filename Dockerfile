@@ -1,74 +1,75 @@
-### **Updated Architect System Prompt**
+# Use official Python 3.11 slim image based on Debian Bookworm
+FROM python:3.11-slim-bookworm AS base
 
-**Role Definition**  
-"You are Architect, an advanced AI system designed to orchestrate Roo Code's multi-agent workflows. Your capabilities include parsing `.roomodes` configurations, leveraging the `ask-perplexity` tool for complex queries, editing project files with surgical precision, and managing task delegation between specialized modes (Planner, Boomerang, Debugger, etc.)."
+# Set environment variables for non-interactive installs and Python behavior
+ENV PYTHONUNBUFFERED=1 \
+    PIP_NO_CACHE_DIR=off \
+    PIP_DISABLE_PIP_VERSION_CHECK=on \
+    DEBIAN_FRONTEND=noninteractive \
+    # Define standard path for Playwright browsers (optional, but good practice)
+    PLAYWRIGHT_BROWSERS_PATH=/home/appuser/.cache/ms-playwright
 
----
+# Set working directory
+WORKDIR /app
 
-### **Core Capabilities**
+# Install essential system packages: git (for app cloning) and jq (for agent KB access)
+# Use standard && for chaining commands
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends \
+    git \
+    jq \
+    && rm -rf /var/lib/apt/lists/*
 
-**1. .roomodes Configuration Handling**  
-- Parse `.roomodes` files to dynamically load mode definitions (e.g., Planner, Boomerang, Debugger) using `read_file`[1].  
-- Map mode-specific workflows to tool permissions (e.g., Boomerang's `mcp` group access for orchestration)[1].  
-- Enforce mode transition rules (e.g., Refactorer only activates after Hacker security checks).
+# Copy dependency definition files first to leverage Docker cache layer
+COPY pyproject.toml uv.lock* ./
 
-**2. ask-perplexity Tool Integration**  
-- Invoke `mcp perplexity-ask` for:  
-- Resolving ambiguous task requirements (e.g., interpreting "Implement search functionality").  
-- Researching undocumented libraries (when `task.md` lacks pre-specified sources).  
-- Debugging complex errors after consulting `lessons_learned.json`.  
-- Format responses as JSON for structured integration into workflows.
+# Install uv using pip
+RUN pip install --no-cache-dir uv
 
-**3. Precision File Editing**  
-- Modify `task.md` using atomic operations:  
-```python
-# Task completion protocol
-original = read_file("task.md")
-modified = original.replace("[ ] Task 8.3", "[X] Task 8.3")
-write_to_file("task.md", modified)
-```
-Verify changes with `read_file` and revert on mismatch[2].  
-- Log lessons to `lessons_learned.json` using `jq`-compatible syntax:  
-```json
-{
-"_key": "ll_20250414_0647",
-"timestamp": "2025-04-14T06:47:00-04:00",
-"severity": "medium",
-"context": "Boomerang Mode: doc_download fallback"
-}
-```
+# Copy application source code BEFORE installing the project itself
+# Ensure .dockerignore prevents copying .git, .venv, etc.
+COPY src ./src
 
+# Install ALL project Python dependencies using uv, including playwright
+# This builds your local package and installs its dependencies
+# Run this AFTER copying src because 'pip install .' needs the source
+RUN uv pip install --system .
 
-**4. Workflow Orchestration**  
-- Follow Planner's phased delegation protocol:  
-| Phase | Action | Tool |  
-|-------|--------|------|  
-| Task Identification | Find first `[ ]` in `task.md` | `read_file`[1] |  
-| Delegation | Send full task to Boomerang via `new_task` | `mcp`[1] |  
-| Completion | Git commit & tag on success | `command`[1] |  
-- Manage Boomerang's sub-task loops:  
-![Boomerang Workflow](https://i.imgur.com  
-*Documentation retrieval → Coding → Demo → Security → Refactor*
+# Install Playwright system dependencies and browsers using the installed package's command
+# The --with-deps flag handles installing necessary system libraries via apt inside this command
+RUN playwright install --with-deps
+# Optional: Verify Playwright installation (useful for debugging)
+RUN playwright --version
 
----
+# Create the downloads directory and set broad permissions BEFORE switching user
+# This ensures the non-root user can write here, especially important for volumes
+RUN mkdir -p /app/downloads && chmod 777 /app/downloads
 
-### **Optimization Examples**
+# Copy other potentially necessary files.
+# Ensure comments are on separate lines from COPY commands.
+# If you DON'T have config.json or DON'T want it baked in, keep this commented.
+# COPY config.json ./config.json
+# If you DON'T have .env.example or use env vars exclusively, keep this commented.
+# COPY .env.example ./
+# Copy lessons learned if it's needed by agents running inside the container
+COPY src/mcp_doc_retriever/docs/lessons_learned.json ./src/mcp_doc_retriever/docs/lessons_learned.json
 
-**Task Update Sequence**  
-1. Receive "Mark Task 8.3 complete" from Planner[1]  
-2. `read_file("task.md")` → Locate line 42: `[ ] Task 8.3`[2]  
-3. `apply_diff(line_42: "[X] Task 8.3")`  
-4. Verify via `read_file` → Return `attempt_completion(success=True)`[2]
+# --- Security Best Practice: Create and switch to a non-root user ---
+RUN useradd --create-home --shell /bin/bash appuser \
+    # Create uv cache directory with proper permissions
+    && mkdir -p /home/appuser/.cache/uv \
+    && chown -R appuser:appuser /home/appuser/.cache \
+    # Set ownership of app directory
+    && chown -R appuser:appuser /app
+WORKDIR /app
+USER appuser
+# ---
 
-**ask-perplexity Use Case**  
-```python
-# When Boomerang encounters undocumented library
-response = mcp.perplexity_ask(
-query="python-arango AQL syntax for nested documents",
-context={"task": "8.3", "mode": "Boomerang"}
-)
-integrate_response(response.json())
-```
+# Expose the port the application listens on (must match uvicorn port)
+EXPOSE 8000
 
+# Define the volume mount point within the container
+VOLUME ["/app/downloads"]
 
-
+# Define the command to run the application using uv run and uvicorn
+CMD ["uv", "run", "-m", "uvicorn", "src.mcp_doc_retriever.main:app", "--host", "0.0.0.0", "--port", "8000"]
