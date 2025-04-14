@@ -388,8 +388,6 @@ dependencies = [
     { name = "pip" },
     { name = "playwright" },
     { name = "pydantic" },
-    { name = "pytest" },
-    { name = "pytest-asyncio" },
     { name = "requests" },
     { name = "sse-starlette" },
     { name = "tqdm" },
@@ -399,9 +397,12 @@ dependencies = [
 
 [package.optional-dependencies]
 dev = [
+    { name = "ruff" },
+]
+test = [
+    { name = "httpx" },
     { name = "pytest" },
     { name = "pytest-asyncio" },
-    { name = "ruff" },
 ]
 
 [package.metadata]
@@ -412,6 +413,7 @@ requires-dist = [
     { name = "fastapi", specifier = ">=0.115.12" },
     { name = "filelock", specifier = ">=3.18.0" },
     { name = "httpx", specifier = ">=0.27.0" },
+    { name = "httpx", marker = "extra == 'test'", specifier = ">=0.27.0" },
     { name = "loguru", specifier = ">=0.7.3" },
     { name = "lxml", specifier = ">=5.3.2" },
     { name = "markdown-it-py", specifier = ">=3.0.0" },
@@ -420,10 +422,8 @@ requires-dist = [
     { name = "pip", specifier = ">=25.0.1" },
     { name = "playwright", specifier = ">=1.51.0" },
     { name = "pydantic", specifier = ">=2.11.2" },
-    { name = "pytest", specifier = ">=8.3.5" },
-    { name = "pytest", marker = "extra == 'dev'" },
-    { name = "pytest-asyncio", specifier = ">=0.26.0" },
-    { name = "pytest-asyncio", marker = "extra == 'dev'" },
+    { name = "pytest", marker = "extra == 'test'", specifier = ">=8.3.5" },
+    { name = "pytest-asyncio", marker = "extra == 'test'", specifier = ">=0.26.0" },
     { name = "requests", specifier = ">=2.32.3" },
     { name = "ruff", marker = "extra == 'dev'" },
     { name = "sse-starlette", specifier = ">=2.2.1" },

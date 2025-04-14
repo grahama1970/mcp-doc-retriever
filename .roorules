@@ -14,7 +14,7 @@
 ## Mandatory Package Check Protocol
 reuse_policy:
   required_sources:
-    python: ["pypi", "internal-utils>=2.3"] 
+    python: ["pypi", "internal-utils>=2.3"]
     js: ["npm", "@roo/web-core"]
   check_order:
     - organization_registry
@@ -53,7 +53,6 @@ reuse_policy:
      - Await Architect approval
 
 # Standard Procedures (Consolidated from Modes)
-- **Error/Ambiguity Handling - Step 1:** When encountering errors or ambiguity, **always** consult relevant entries in `src/mcp_doc_retriever/docs/lessons_learned.json` first for known patterns or solutions, unless explicitly instructed otherwise by the mode definition.
 - **Error/Ambiguity Handling - Step 1 (Search Lessons Learned):** When encountering errors or ambiguity, **always search** relevant entries in `src/mcp_doc_retriever/docs/lessons_learned.json` first using `jq` via the `command` tool, unless explicitly instructed otherwise. Formulate a `jq` query to filter entries based on relevant keywords from the error message, task context, relevant files, or tools involved.
   # JQ Insert Example in ROO Rules Structure
 
@@ -67,16 +66,26 @@ reuse_policy:
   - Targets the JSON file (projects.json) containing your projects array.
   - Appends a new object with the specified id and version.
   - Complies with our standard procedure for making controlled updates to JSON configurations.
-    
+
   Adjust values as necessary to meet your project's required parameters.
 - **Error/Ambiguity Handling - Step 2 (Code Context):** If searching lessons learned yields no solution, consult relevant documentation for tasks involving code understanding, implementation, or refactoring. This includes:
    a. **Downloaded Documentation:** Check content within the relevant download directory (typically under `/app/downloads/content/` inside the container) if documentation was retrieved using the `doc_download` tool. Use `read_file` or the `doc_search` tool as appropriate.
    b. **Project Documentation:** Check any supplementary documentation stored within the project repository (e.g., in `repo_docs/`).
 - **Error/Ambiguity Handling - Step 3 (External Research):** If project documentation and searching lessons learned are insufficient, use `perplexity-ask` via `mcp` for external research (e.g., library issues, general patterns).
  *Note: Custom mode instructions specify the escalation path if these steps fail.*
+- **Error/Ambiguity Handling - Step 4 (Prepare for Human Debugging):** For **Coder roles only** (Intern, Junior, Senior/Code, Refactorer): If, after following steps 1-3, you determine you cannot fix a code execution error, and **you have *not* performed Self-Recovery** (i.e., the problematic code is still present), then **before** you escalate to a human (`ask_human`) or report final failure to your delegator (`Boomerang Mode`):
+    a. Identify the primary file(s) and function(s) where the error occurs or originates.
+    b. Insert comments formatted precisely as `# VSCODE BREAKPOINT: Brief reason why a breakpoint is helpful here` at strategic locations within the identified code to aid human debugging. Good locations include:
+        *   Immediately before the line suspected of causing the error.
+        *   At the beginning of the function/method containing the error.
+        *   Before complex conditional logic (if/else) or loops related to the error.
+        *   Before calls to potentially problematic external libraries or functions within the failing section.
+    c. Ensure the added comments do *not* break code syntax or logic. Use standard Python comments.
+    d. After adding potentially helpful breakpoint comments, proceed with the escalation (`ask_human`) or failure reporting (`attempt_completion` to Boomerang), explicitly mentioning that `# VSCODE BREAKPOINT:` comments have been added to aid debugging.
 
-# **Self-Recovery Procedure: Revert Failed Edits**
-- **Self-Recovery Rule:** For all Code-editing roles (`Intern Coder`, `Junior Coder`, `Senior Coder`/`code`, `Refactorer`): If a file editing tool (`apply_diff`, `write_to_file`) results in a clearly failed state, OR if after making edits, subsequent checks (including the Mandatory Post-Edit Standalone Verification) reveal the file is broken and you **cannot fix it** after applying standard error handling procedures (KB, docs, reasonable fix attempts), you **MUST** proactively attempt to revert the specific file(s) to their last committed state before reporting failure. Execute `git checkout -- <filename>` (replacing `<filename>` with the actual file path) using the `command` tool for each affected file. Report that you performed this revert action when you subsequently report the failure or escalate.
+# Self-Recovery Procedure: Revert Failed Edits
+- **Self-Recovery Rule:** For all Code-editing roles (`Intern Coder`, `Junior Coder`, `Senior Coder`/`code`, `Refactorer`): If a file editing tool (`apply_diff`, `write_to_file`) results in a clearly failed state, OR if after making edits, subsequent checks (including the Mandatory Post-Edit Standalone Module Verification) reveal the file is broken and you **cannot fix it** after applying standard error handling procedures (KB, docs, reasonable fix attempts), you **MUST** proactively attempt to revert the specific file(s) to their last committed state before reporting failure. Execute `git checkout -- <filename>` (replacing `<filename>` with the actual file path) using the `command` tool for each affected file. Report that you performed this revert action when you subsequently report the failure or escalate.
+- **Note on Interaction:** If self-recovery IS performed, **Error/Ambiguity Handling - Step 4 (Prepare for Human Debugging) is skipped** for that specific failure, as the problematic code state is discarded.
 
 # Lesson Logging
 - **Lesson Logging Rule:** If you successfully employ a novel technique, pattern, or workaround not present in the KB, *or* if prompted by your delegator, add a concise lesson learned entry to `src/mcp_doc_retriever/docs/lessons_learned.json`. Clearly state your role in the entry (e.g., 'Role: Junior Coder'). **Note:** Modes `Intern Coder` and `Presenter` do not log lessons. Custom mode instructions specify triggers for logging specific types of lessons (e.g., planning, orchestration, technical).
@@ -90,8 +99,6 @@ roo search-alternative --package=<pkg>;
 }
 ```
 
-
-
 # Consequences for Violations
 - **First offense**: Auto-revert via `git checkout -- <file>`
 - **Repeat offenses**: 24hr code submission lock
@@ -104,3 +111,4 @@ roo search-alternative --package=<pkg>;
   - **Never rely solely on inner function error handling**; the orchestration must capture and log all exceptions.
   - If silent failures persist, **refactor the orchestration layer** to expose root causes before patching inner functions.
   - This ensures failures are observable, diagnosable, and fixable.
+```
