@@ -4,16 +4,37 @@
       "role": "Senior Coder",
       "problem": "Integration testing between Python and Shell scripts made debugging difficult and time-consuming. Lack of proper debugging tools for shell scripts increased diagnosis time.",
       "solution": "1. Convert shell-based test runners to Python for better debugging\n2. Use pdb/debugger for step-by-step inspection\n3. Add detailed logging in both Python and shell components\n4. Consider pytest-based integration tests with fixtures",
-      "relevant_for": ["testing", "debugging", "shell_integration", "python"],
-      "tags": ["debugging", "testing", "shell", "python", "integration"],
+      "relevant_for": [
+        "testing",
+        "debugging",
+        "shell_integration",
+        "python"
+      ],
+      "tags": [
+        "debugging",
+        "testing",
+        "shell",
+        "python",
+        "integration"
+      ],
       "example": "Instead of shell test runner:\ntest_runner.sh -> test_runner.py with:\n- pytest fixtures for setup/teardown\n- debugger breakpoints\n- structured logging\n- proper exception handling",
       "date": "2025-04-13"
     },
     {
       "problem": "Shell script JSON payload contained inline comments (# character) which caused invalid JSON errors in API requests. This was particularly hard to spot as the heredoc syntax in bash preserves comments.",
       "solution": "Never include comments inside JSON payloads in shell scripts, even when using heredoc syntax. Place any necessary documentation as bash comments before the JSON block. For git payloads specifically, ensure doc_path is a clean string without comments.",
-      "relevant_for": ["shell_scripting", "json", "api_testing", "git_integration"],
-      "tags": ["json", "shell_script", "api", "git"],
+      "relevant_for": [
+        "shell_scripting",
+        "json",
+        "api_testing",
+        "git_integration"
+      ],
+      "tags": [
+        "json",
+        "shell_script",
+        "api",
+        "git"
+      ],
       "example": "BAD:\n  payload=$(cat <<EOF\n  {\n    \"doc_path\": \".\", # Comment here breaks JSON\n  }\n  EOF\n  )\n\nGOOD:\n  # Comment about doc_path here\n  payload=$(cat <<EOF\n  {\n    \"doc_path\": \".\"\n  }\n  EOF\n  )",
       "date": "2025-04-13"
     },
@@ -21,8 +42,17 @@
       "role": "Senior Coder",
       "problem": "CLI script using Typer wasn't properly handling nested commands (download run) and had inconsistent standalone vs module execution modes, leading to CLI argument parsing failures.",
       "solution": "1. Use Typer's nested command structure (app.add_typer(download_app, name='download'))\n2. Keep __main__ simple, just call app()\n3. Test both 'uv run script.py' and 'uv run -m package.script' modes",
-      "relevant_for": ["cli_design", "typer", "python_packaging"],
-      "tags": ["cli", "typer", "python", "module_design"],
+      "relevant_for": [
+        "cli_design",
+        "typer",
+        "python_packaging"
+      ],
+      "tags": [
+        "cli",
+        "typer",
+        "python",
+        "module_design"
+      ],
       "example": "app = typer.Typer()\ndownload_app = typer.Typer()\napp.add_typer(download_app, name='download')\n@download_app.command('run')\ndef download_cmd(): ...\n\nif __name__ == '__main__':\n    app()",
       "date": "2025-04-13"
     },
@@ -30,7 +60,11 @@
       "role": "Senior Coder",
       "problem": "Needed to ensure both standalone execution and module imports work for a script that depends on internal project models",
       "solution": "Define mock versions of required models inside __name__ == '__main__' block, then conditionally use either mock or real models based on how the script is run.",
-      "relevant_for": ["module_design", "testing", "code_reuse"],
+      "relevant_for": [
+        "module_design",
+        "testing",
+        "code_reuse"
+      ],
       "example": "In tree_sitter_extractor.py, mock ContentBlock and ExtractedBlock are defined locally for standalone testing, while the real models are imported from mcp_doc_retriever.models when used as a module.",
       "date": "2025-04-12"
     },
@@ -43,7 +77,13 @@
       "phase": "Handle Task Completion",
       "problem": "jq query failed when searching lessons_learned.json for tags because an existing lesson object lacked the 'tags' field, resulting in a 'Cannot iterate over null' error.",
       "solution": "Ensure all lesson objects consistently include a 'tags' field (even if an empty array []) before attempting to iterate over it with jq '.tags[]'. Alternatively, make the jq query more robust to handle missing fields, e.g., using 'select(.tags != null and (.tags[] | contains(...)))'.",
-      "tags": ["jq", "lessons_learned", "json_structure", "planner", "error_handling"],
+      "tags": [
+        "jq",
+        "lessons_learned",
+        "json_structure",
+        "planner",
+        "error_handling"
+      ],
       "context": "Attempting to search lessons_learned.json using jq '.lessons[] | select(.tags[] | contains(...))' as part of the standard procedure before marking Task 1.6 complete."
     },
     {
@@ -55,7 +95,13 @@
       "phase": "Handle Task Failure / Planning",
       "problem": "Human verification tasks (e.g., Task 2.5, 3.4) lacked sufficient context (purpose, specific file paths relative to project root, clear command explanations, context on recent fixes), leading to ambiguity and inefficiency during manual checks.",
       "solution": "When defining human verification tasks in task.md: explicitly state the goal, provide context on recent changes being verified (linking to previous fixes if applicable), use absolute paths or paths clearly relative to the project root for file checks, explain the purpose/expected outcome of each command, and ensure clarity for the human verifier.",
-      "tags": ["planning", "human_verification", "task_definition", "context", "feedback"],
+      "tags": [
+        "planning",
+        "human_verification",
+        "task_definition",
+        "context",
+        "feedback"
+      ],
       "context": "Received feedback after Task 2.5 failure indicating manual verification steps needed more detail."
     },
     {
@@ -67,8 +113,37 @@
       "phase": "Planning / Task Definition",
       "problem": "Confusion arose regarding which test script to use for local vs. Docker E2E testing. `scripts/test_runner.sh` (intended for Docker) was mistakenly associated with local testing failures, leading to incorrect debugging focus. The plan (task.md) lacked explicit clarification on the distinct roles of `pytest tests/test_mcp_retriever_e2e_loguru.py` (local) and `scripts/test_runner.sh` (Docker).",
       "solution": "Explicitly document the purpose and target environment for each E2E testing script within `task.md`. Task 2.2 should specify using `pytest` against the local server (port 8005), while Task 3.3 should specify using `scripts/test_runner.sh` against the Docker container (port 8001). Added a note in Phase 2 of `task.md` for clarity.",
-      "tags": ["planning", "testing", "e2e", "docker", "local_development", "task_definition", "clarity"],
+      "tags": [
+        "planning",
+        "testing",
+        "e2e",
+        "docker",
+        "local_development",
+        "task_definition",
+        "clarity"
+      ],
       "context": "User reported debugging issues with `test_runner.sh` against the local server. Analysis revealed the script targets Docker. `task.md` was updated to clarify script usage and reset Phase 2 for proper local validation."
+    },
+    {
+      "_key": "senior_coder_pytest_import_error_uv_run_202504142058",
+      "timestamp": "2025-04-15T00:58:00Z",
+      "severity": "INFO",
+      "role": "Senior Coder",
+      "task": "Task 3.3: Execute E2E Tests (Docker API)",
+      "phase": "Testing / Debugging",
+      "problem": "Encountered `ImportError: attempted relative import with no known parent package` when running pytest tests located in a subdirectory (`tests/e2e/`) using `uv run python -m pytest`. Standard `uv run pytest tests/e2e/` also failed with the same error after resolving initial `ModuleNotFoundError`. Adding `__init__.py` files did not resolve the issue.",
+      "solution": "Changed all relative imports within the `tests/e2e/` directory (e.g., `from .conftest import ...`) to absolute imports based on the project root (e.g., `from tests.e2e.conftest import ...`). This allowed `uv run python -m pytest -v -s tests/e2e/` (potentially with `env MCP_TEST_BASE_URL=...`) to correctly resolve modules and execute the tests successfully.",
+      "tags": [
+        "pytest",
+        "uv run",
+        "import_error",
+        "relative_import",
+        "absolute_import",
+        "testing",
+        "python",
+        "e2e"
+      ],
+      "context": "During E2E testing against the Docker container API, initial attempts to run tests failed due to import resolution issues specific to running pytest via `uv run` on tests in subdirectories."
     }
   ]
 }

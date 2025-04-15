@@ -1,7 +1,23 @@
+# ========================================
 # Global Tooling & Execution Rules
+# ========================================
 - Always use uv to add packages; do not use pip for installations.
 - We use 'uv run' for executing python and pytest scripts. We do NOT use python directly to execute scripts.
-- **Running Commands with Temporary Environment Variables:** When a task requires running a command with a specific environment variable set *only* for that command's execution (e.g., setting `MCP_TEST_BASE_URL` for pytest), **do not** rely on the simple `VAR=value command args...` syntax, as agent command tools may misinterpret it. **Instead, explicitly use the `env` command:**
+- **Running Commands with Temporary Environment Variables:** When a task requires running a command with a specific environment variable set *only* for that command's execution (e.g., setting `MCP_TEST_BASE_URL` for pytest), **do not** rely on the simple `VAR=value command args...` syntax,recovery IS performed, **Error/Ambiguity Handling - Step 5 (Prepare for Human Debugging) is skipped** for that specific failure, as the problematic code state is discarded.
+
+# Lesson Logging and Management (Updated)
+- **Lesson Logging Rule (Add):** If you successfully employ a novel technique, pattern, or workaround, *or* if prompted by your delegator, add a concise lesson learned entry to the `lessons_learned` table in the SQLite database (`/app/downloads/project_state.db`). **Use the dedicated CLI script `src/mcp_doc_retriever/lessons_cli.py add ...` via the `command` tool (e.g., `uv run python src/mcp_doc_retriever/lessons_cli.py add --role ...`) OR a direct SQL `INSERT` statement via the `command` tool (using `sqlite3`).** Clearly state your role in the entry. **Do not use file system tools (`write_to_file`, etc.) for lessons learned.** *Note: Modes `Intern Coder` and `Presenter` do not log lessons.* Custom mode instructions specify triggers for logging specific types of lessons (e.g., planning, orchestration, technical).
+    - **Database Path:** `/app/downloads/project_state.db` (corresponds to `./downloads/project_state.db` on host)
+    - **Table Name:** `lessons_learned`
+    - **Columns:** `timestamp`, `severity`, `role`, `task`, `phase`, `problem`, `solution`, `tags`, `context`, `example`.
+    - **Preferred Tool:** `command`
+    - **Preferred Command Syntax (CLI Script):** `uv run python src/mcp_doc_retriever/lessons_cli.py add --role "<ROLE>" --problem "<PROBLEM>" --solution "<SOLUTION>" [--tag "<TAG1>" --tag "<TAG2>" ...] [--severity <SEVERITY>] [--task "<TASK>"] [--phase "<PHASE>"] [--context "<CONTEXT>"] [--example "<EXAMPLE>"] [--db-path <DB_PATH>]`
+    - **Alternative Command Syntax (Direct SQL):** `sqlite3 <database_path> "<SQL_INSERT_STATEMENT>"`
+    - **Values:**
+        - `timestamp`: Use SQLite function `datetime('now', 'utc')`.
+        - `role`: Your current agent role (e.g., 'Senior Coder').
+        - `tags`: Provide as a valid JSON array string, e.g., `'["tag1", "tag2"]'`. Use `json_array('tag1', 'tag2')` if supported by the `sqlite3` version, otherwise construct the string carefully.
+        - Text Fields (`problem`, `solution`, `context`, `example`): ** as agent command tools may misinterpret it. **Instead, explicitly use the `env` command:**
     ```sh
     env VAR_NAME="var_value" command arg1 arg2...
     ```
@@ -11,7 +27,9 @@
     ```
   - This ensures the variable (`MCP_TEST_BASE_URL`) is correctly set in the environment specifically for the `uv run pytest` process.
 
+# ============================================
 # General Coding & Development Principles
+# ============================================
 - For all Code-specific roles: Be proactive when coding. Try to fix failed tests and code. Do NOT simply report back that the tests/code failed. Iterate until you fix the code, **starting with standalone script execution (see rule below)**. Follow your protocol.
 - Explain your reasoning before providing code.
 - Focus on code readability and maintainability.
@@ -19,7 +37,9 @@
 - Prioritize using the most common libraries in the community.
 - Always prefer official, maintained containers or packages over custom builds when available. Avoid redundant work and reduce maintenance burden by leveraging upstream expertise.
 
+# ==============================
 # Code Reuse Enforcement (NEW)
+# ==============================
 ## Mandatory Package Check Protocol
 reuse_policy:
   required_sources:
@@ -44,98 +64,154 @@ reuse_policy:
   - Create `reuse_exception.md` with cost-benefit analysis
   - Requires Architect approval for code >50 lines
 
+# ==========================================
 # Module Structure & Documentation Rules
+# ==========================================
 - Every core module file **must** include at the top:
   - A **description** of the module's purpose.
-  - **Links** to third-party package documentation used in the file.
+  - **Links** to third-party package documentationCrucially, properly escape any single quotes (') within these text fields by doubling them ('') for SQL compatibility.** Example: `It's important` becomes `'It''s important'`.
+    - **Example SQL Insert (via sqlite3 CLI):**
+        ```sh
+        # --- Example values (handle quoting carefully in actual execution) ---
+        ROLE='Senior Coder'
+        PROBLEM='Database query failed due to incorrect JSON tag search syntax. It''s tricky.' # Escaped quote
+        SOLUTION='Use LIKE ''%\"tag_name\"%'' to search for tags within the JSON array string column.' # Escaped quote
+        TAGS='["sqlite", "json", "search", "sql"]' # Prepare JSON array string
+
+        sqlite3 /app/downloads/project_state.db \
+        "INSERT INTO lessons_learned (timestamp, severity, role, task, phase, problem, solution, tags, context, example) \
+        VALUES (datetime('now', 'utc'), 'WARN', '${ROLE}', 'Task 1.2', 'Debugging', '${PROBLEM}', '${SOLUTION}', '${TAGS}', 'Context about the specific query', 'Example: tags LIKE ''%\"docker\"%''');"
+        ```
+        *(Adapt values, table/column names, and file used in the file.
   - A **sample input** and **expected output** for its main function(s).
 - Every core module file **must** include a **minimal real-world usage function** (e.g., `if __name__ == "__main__":`) that verifies its core functionality independently, without Docker.
 - No file should exceed **500 lines**; refactor into smaller modules if necessary.
 
+# ====================================
 # Mandatory Verification Sequence
-- **Mandatory Post-Edit Standalone Module Verification:** For all Code-specific roles (Coders, Refactorer): **Immediately after successfully applying edits** to a primary script file (e.g., using `apply_diff`, `write_to_file`), and **before** proceeding to any other testing (like integration tests, Docker builds) or reporting completion, you **MUST** execute the modified script's `if __name__ == '__main__':` block using `uv run <filename.py>`. This standalone execution must pass without errors and verify the script's core functionality as intended by the `__main__` block (required by module structure rules). If this check fails, you must attempt to fix the code (following standard error handling procedures and the proactive fixing principle) before proceeding. Only after this standalone check *succeeds* should you consider the edit successful and move to subsequent steps or report completion.
+# ====================================
+- **Mandatory Post-Edit Standalone Module Verification:** For all Code-specific roles (Coders, Refactorer): **Immediately after successfully applying edits** to a primary script file (e.g., using `apply_diff`, `write_to_file`), and **before** proceeding to any other testing (like integration tests, Docker builds) or reporting completion, you **MUST** execute the modified script's `if __name__ == '__main__':` block using `uv run <filename.py>`. This standalone execution must pass without errors and verify the script's core functionality as intended by the `__main__` block (required by module structure rules). If this check fails, you must attempt to fix the code (following path. Pay close attention to SQL quoting for text fields).*
+
+- **Lesson Updating Rule (Restricted Use):** **Generally, avoid updating existing lessons unless correcting a factual error or significantly clarifying a solution.** If instructed (e.g., by Planner or during Debugging with human confirmation) to update a specific lesson:
+    a. **Identify the `id`** of the lesson to update (use a `SELECT id, problem, solution FROM lessons_learned WHERE ...` query first).
+    b. Construct standard error handling procedures and the proactive fixing principle) before proceeding. Only after this standalone check *succeeds* should you consider the edit successful and move to subsequent steps or report completion.
 - **New Pre-Code Validation**:
   1. Run `dependency_analyzer --file=proposal.py`
   2. Verify against `approved_packages.list`
   3. If new packages found:
-     - Submit `security_review_request.json`
+ an SQL `UPDATE` statement targeting that specific `id`.
+    c. Use `SET column_name = 'new_value'` clauses for the specific columns to change. **Properly escape single quotes ('') in new text values.**
+    d. Execute using `sqlite3` via the `command` tool.
+    - **     - Submit `security_review_request.json`
      - Await Architect approval
-- **Mandatory Server Readiness Verification:** For **any** agent role: **Immediately after successfully executing a command** intended to start a background web server (e.g., `uvicorn`, `gunicorn`, potentially `docker compose up -d` if testing relies on immediate API availability), and **before** proceeding with any task that relies on that server being responsive (e.g., running API tests, sending requests):
-    a. **Identify Target Endpoint:** Determine the base URL (e.g., `http://localhost:8005`) and a simple, reliable health-check or documentation endpoint (preferred: `/health`, fallback: `/docs` or `/openapi.json`).
-    b. **Perform HTTP Polling:** Use available tools (`requests` via Python script/tool, `curl` via `command`, etc.) to repeatedly send a GET request to the target endpoint.
-    c. **Polling Parameters:** Poll every **2 seconds** for a maximum of **30 seconds** (adjust timeouts as needed).
-    d. **Success Condition:** Proceed **only** when a successful HTTP response (typically status code 200 OK) is received from the target endpoint.
-    e. **Failure Condition:** If a successful response is not received within the timeout, the server is considered not ready. The agent **MUST** treat this as a failure of the server startup step.
-    f. **Error Handling:** Handle potential connection errors during polling gracefully (e.g., log them but continue polling until timeout).
-    g. **Logging:** Log the start of polling, each attempt (or status changes), and the final success or timeout result.
-
-# Standard Procedures (Consolidated from Modes)
-- **Error/Ambiguity Handling - Step 1 (Search Lessons Learned):** When encountering errors or ambiguity, **always search** relevant entries in `src/mcp_doc_retriever/docs/lessons_learned.json` first using `jq` via the `command` tool, unless explicitly instructed otherwise. Formulate a `jq` query to filter entries based on relevant keywords from the error message, task context, relevant files, or tools involved.
-    - **Example `jq` Search:** To find lessons tagged with 'debugging' OR containing 'timeout' in the problem description (case-insensitive), use a command like:
+- **Mandatory Server Readiness Verification:** For **any** agent role: **Immediately after successfully executing a command** intended to start a background web server (e.g., `uvicorn`,Example SQL Update (via sqlite3 CLI - Update problem and tags for lesson ID 5):**
         ```sh
-        jq '.lessons[] | select((.tags[]? | contains("debugging")) or (.problem | test("timeout"; "i")))' src/mcp_doc_retriever/docs/lessons_learned.json
+        # --- Example values (handle quoting carefully `gunicorn`, potentially `docker compose up -d` if testing relies on immediate API availability), and **before) ---
+        NEW_PROBLEM='Updated description, it''s actually simpler.' #** proceeding with any task that relies on that server being responsive (e.g Escaped quote
+        NEW_TAGS='["sqlite", "json", "search", "sql", "update"]' # New JSON array string
+        LESS., running API tests, sending requests):
+    a. **Identify Target Endpoint:** Determine the base URLON_ID=5
+
+        sqlite3 /app/downloads/project_state.db \
+        "UPDATE lessons_learned SET problem = '${NEW_PROBLEM}', tags = '${NEW_TAGS}' (e.g., `http://localhost:8005`) and a simple, reliable health WHERE id = ${LESSON_ID};"
         ```
-        *(Adapt keywords and file path as needed).*
-  # JQ Insert Example in ROO Rules Structure
+        *(Adapt-check or documentation endpoint (preferred: `/health`, fallback: `/docs` or `/openapi.json`).
+ columns, values, and ID. Ensure proper quoting/escaping).*
 
-  To append a new project entry to the projects list following roo guidelines, use the command below:
+- **Lesson De    b. **Perform HTTP Polling:** Use available tools (`requests` via Python script/tool, `curl` via `command`, etc.) to repeatedly sendletion Rule (Highly Restricted Use):** **Do not delete lessons unless explicitly instructed by Planner a GET request to the target endpoint.
+    c. **Polling Parameters:** Poll every **2 seconds** or during Debugging with human confirmation.** Deletion removes potentially valuable history.
+    a. **Identify the `id`** of the lesson to delete (use a `SELECT id for a maximum of **30 seconds** (adjust timeouts as needed).
+, problem FROM lessons_learned WHERE ...` query first and be absolutely certain).
+    b. Construct    d. **Success Condition:** Proceed **only** when a successful HTTP response (typically status code 200 OK) is received from the target endpoint an SQL `DELETE` statement targeting that specific `id`.
+    c. Execute using `sqlite3` via the `command` tool.
+    -.
+    e. **Failure Condition:** If a successful response is not received **Example SQL Delete (via sqlite3 CLI - Delete lesson ID 12):**
+        ```sh
+        LESSON_ID=12
 
-  ```sh
-  jq '.projects += [{ "id": 3, "version": "5.4.1" }]' projects.json
-  ```
+         within the timeout, the server is considered not ready. The agent **MUST** treat this as asqlite3 /app/downloads/project_state.db \
+        "DELETE FROM lessons_learned WHERE id = ${LESSON_ID};"
+        ```
 
-  This command:
-  - Targets the JSON file (projects.json) containing your projects array.
-  - Appends a new object with the specified id and version.
-  - Complies with our standard procedure for making controlled updates to JSON configurations.
-
-  Adjust values as necessary to meet your project's required parameters.
-- **Error/Ambiguity Handling - Step 2 (Code Context):** If searching lessons learned yields no solution, consult relevant documentation for tasks involving code understanding, implementation, or refactoring. This includes:
-   a. **Downloaded Documentation:** Check content within the relevant download directory (typically under `/app/downloads/content/` inside the container) if documentation was retrieved using the `doc_download` tool. Use `read_file` or the `doc_search` tool as appropriate.
-   b. **Project Documentation:** Check any supplementary documentation stored within the project repository (e.g., in `repo_docs/`).
-- **Error/Ambiguity Handling - Step 3 (Locate Project Code):** For **Coder roles only**: If an error indicates a specific function, class, or variable defined *within this project* is undefined or cannot be imported (e.g., `NameError`, `ImportError`), and it wasn't found via Step 2:
-    a. **Use the `search_files` tool** to locate the definition of the specific missing identifier.
-    b. Specify the identifier name as the search query.
-    c. Scope the search primarily to the project's source directory (e.g., `src/mcp_doc_retriever/`).
-    d. If the definition is found, analyze the correct import path or usage. If not found, proceed to the next step.
-- **Error/Ambiguity Handling - Step 4 (External Research):** If project documentation, searching lessons learned, **and searching project files (Step 3)** are insufficient, use `perplexity-ask` via `mcp` for external research (e.g., library issues, general patterns).
- *Note: Custom mode instructions specify the escalation path if these steps fail.*
-- **Error/Ambiguity Handling - Step 5 (Prepare for Human Debugging):** For **Coder roles only** (Intern, Junior, Senior/Code, Refactorer): If, after following steps 1-4, you determine you cannot fix a code execution error, and **you have *not* performed Self-Recovery** (i.e., the problematic code is still present), then **before** you escalate to a human (`ask_human`) or report final failure to your delegator (`Boomerang Mode`):
-    a. Identify the primary file(s) and function(s) where the error occurs or originates.
-    b. Insert comments formatted precisely as `# VSCODE BREAKPOINT: Brief reason why a breakpoint is helpful here` at strategic locations within the identified code to aid human debugging. Good locations include:
-        *   Immediately before the line suspected of causing the error.
-        *   At the beginning of the function/method containing the error.
-        *   Before complex conditional logic (if/else) or loops related to the error.
-        *   Before calls to potentially problematic external libraries or functions within the failing section.
-    c. Ensure the added comments do *not* break code syntax or logic. Use standard Python comments.
-    d. After adding potentially helpful breakpoint comments, proceed with the escalation (`ask_human`) or failure reporting (`attempt_completion` to Boomerang), explicitly mentioning that `# VSCODE BREAKPOINT:` comments have been added to aid debugging.
-
-# Self-Recovery Procedure: Revert Failed Edits
-- **Self-Recovery Rule:** For all Code-editing roles (`Intern Coder`, `Junior Coder`, `Senior Coder`/`code`, `Refactorer`): If a file editing tool (`apply_diff`, `write_to_file`) results in a clearly failed state, OR if after making edits, subsequent checks (including the Mandatory Post-Edit Standalone Module Verification) reveal the file is broken and you **cannot fix it** after applying standard error handling procedures (KB, docs, reasonable fix attempts), you **MUST** proactively attempt to revert the specific file(s) to their last committed state before reporting failure. Execute `git checkout -- <filename>` (replacing `<filename>` with the actual file path) using the `command` tool for each affected file. Report that you performed this revert action when you subsequently report the failure or escalate.
-- **Note on Interaction:** If self-recovery IS performed, **Error/Ambiguity Handling - Step 5 (Prepare for Human Debugging) is skipped** for that specific failure, as the problematic code state is discarded.
-
-# Lesson Logging
-- **Lesson Logging Rule:** If you successfully employ a novel technique, pattern, or workaround not present in the KB, *or* if prompted by your delegator, add a concise lesson learned entry to `src/mcp_doc_retriever/docs/lessons_learned.json`. Clearly state your role in the entry (e.g., 'Role: Junior Coder'). **Note:** Modes `Intern Coder` and `Presenter` do not log lessons. Custom mode instructions specify triggers for logging specific types of lessons (e.g., planning, orchestration, technical).
-
-# Enforcement Examples
+ failure of the server startup step.
+    f. **Error Handling:** Handle potential connection# Enforcement Examples
+# ... (remains the same) ...
 Package installation guardrail
 ```
 uv install <pkg> || {
-echo "Failed package install - checking alternatives";
+echo "Failed package install - checking alternatives"; errors during polling gracefully (e.g., log them but continue polling until timeout).
+    g. **Logging:** Log the start of polling, each attempt (or status changes), and the final success or timeout result.
+
+# ==============================================
+# Standard Procedures (Consolidated from
 roo search-alternative --package=<pkg>;
 }
 ```
 
-# Consequences for Violations
+# Modes)
+# ==============================================
+- **Error/Ambiguity Handling - Step 1 (Search Lessons Learned):**
+    - **Action:** When encountering errors Consequences for Violations
+# ... (remains the same) ...
 - **First offense**: Auto-revert via `git checkout -- <file>`
-- **Repeat offenses**: 24hr code submission lock
+- **Repeat offenses or ambiguity, **always query** the `lessons_learned` table in the application**: 24hr code submission lock
 - **Critical violations**: Trigger architectural review
 
 # Async Recursive Workflows Debugging
-- When building or debugging **async recursive workflows** (e.g., downloaders, crawlers):
+# ... (remains the same) ...
+- When's SQLite database (`/app/downloads/project_state.db`) building or debugging **async recursive workflows** (e.g., downloaders, first, unless explicitly instructed otherwise.
+    - **Tool:** Use the `command` tool with crawlers):
   - **Always add deep contextual logging** at every step of the recursion, including URL processing, network calls, and error handling.
-  - **Propagate error messages and tracebacks** explicitly from inner functions to the orchestration layer.
-  - **Never rely solely on inner function error handling**; the orchestration must capture and log all exceptions.
-  - If silent failures persist, **refactor the orchestration layer** to expose root causes before patching inner functions.
-  - This ensures failures are observable, diagnosable, and fixable.
+  - **Propagate error messages and trace the `sqlite3` command-line utility.
+    - **Database Pathbacks** explicitly from inner functions to the orchestration layer.
+  - **Never rely solely on inner:** `/app/downloads/project_state.db` (inside the container). function error handling**; the orchestration must capture and log all exceptions.
+  - If silent failures persist, **refactor the orchestration layer** to expose root causes before patching
+    - **Goal:** Find relevant past solutions or insights.
+    - **Querying:** inner functions.
+  - This ensures failures are observable, diagnosable,
+        - Use SQL `SELECT` statements. Always select the `id` column along with other relevant columns (`role`, `problem`, `solution`, `tags`, and fixable.
 ```
+
+**Key Changes and Clarifications in `.roorules`:**
+
+1. `context`, `example`) in case you need to refer back to or update the  **Database Path:** Consistently uses `/app/downloads/project_state.db`. lesson later.
+        - Use `WHERE` clauses to filter:
+            - For keywords in text fields: Use `LIKE '%keyword%'` on `problem`, `solution`, `context
+2.  **Tool:** Explicitly states to use `sqlite3` via the `command` tool`, or `example` columns. Combine multiple keywords using `AND` or `OR`.
+3.  **Table/Columns:** Clearly identifies the `lessons_learned` table and its relevant columns.
+4.  **Search (`SELECT`) Instructions:**
+    *   Expl as needed within the `WHERE` clause. Example: `WHERE (problem LIKE '%timeoutains filtering by keywords (`LIKE`), tags (`LIKE` on JSON string), and role%') OR (solution LIKE '%asyncio%')`.
+            - For tags: Search the `tags` column (which stores a JSON string array) using `LIKE (`=`).
+    *   Recommends selecting `id` for potential '%"tag_name"%'`. Example: `WHERE tags LIKE '%"docker"%' AND tags LIKE '%"testing"%'`.
+        - Order results, usually by most recent first: `ORDER BY timestamp DESC`.
+        - Limit the number of results updates/deletes.
+    *   Provides a clear example combining keyword and tag search.
+5.  **Add (`INSERT`) Instructions:**
+    *   : `LIMIT 5` (or a reasonable number).
+    - **Example SQL Search (via `sqlite3` CLI):** To find the 5 most recent lessons tagged with 'docker' OR containing 'timeout' in the problem description:Lists columns to insert.
+    *   Specifies using `datetime('now', 'utc')
+        ```sh
+        # Command to execute:
+        sqlite3 /app/downloads` for timestamp.
+    *   Specifies providing `tags` as a JSON/project_state.db "SELECT id, role, problem, solution, tags FROM array string (using `json_array()` if available, otherwise constructing the string).
+    *    lessons_learned WHERE (tags LIKE '%\"docker\"%') OR (problem LIKE**Crucially highlights the need to escape single quotes (`'`) within text fields '%timeout%') ORDER BY timestamp DESC LIMIT 5;"
+        ```
+        *( (`problem`, `solution`, `context`, `example`) by doubling them (`''Adapt keywords, tags, selected columns, and limit as needed. Ensure correct SQL quoting,`) for SQL compatibility.**
+    *   Provides an example showing shell variable usage especially double quotes around tags inside the `LIKE` pattern).*
+    - **Outcome:** Analyze the query results. If a relevant lesson is found, apply its solution. If no and basic escaping (more complex escaping might require scripting).
+6.  **Update relevant lesson is found, proceed to the next error handling step.
+
+- **Error/Ambiguity Handling - Step 2 (Code Context):** If searching lessons learned yields no solution, consult (`UPDATE`) Instructions:**
+    *   Emphasizes restricted use (corre relevant documentation for tasks involving code understanding, implementation, or refactoring. This includes:ctions only).
+    *   Requires identifying the `id` first.
+    *   
+   a. **Downloaded Documentation:** Check content within the relevant download directory (Specifies using `SET column = 'value'` clauses.
+    *   Retypically under `/app/downloads/content/` inside the container) if documentation was retrieved usingiterates the need to escape single quotes in new values.
+    *   Provides a clear example.
+7.  **Delete (`DELETE`) Instructions:**
+    *   Emphasizes *highly* restricted use.
+    *   Requires identifying the `id` first the `doc_download` tool. Use `read_file` or the `doc_search` tool as appropriate.
+   b. **Project Documentation:** Check any supplementary documentation stored within the project repository (e.g., in `repo_docs/`).
+ with certainty.
+    *   Provides a clear example.
+

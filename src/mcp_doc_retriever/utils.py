@@ -33,6 +33,7 @@ import hashlib
 import ipaddress
 import logging
 import re
+from datetime import datetime, timezone
 import socket
 from pathlib import Path  # Keep if still needed by any remaining utils
 from typing import List, Optional
@@ -314,6 +315,31 @@ def is_url_private_or_internal(url: str) -> bool:
             f"Unexpected error during SSRF check for '{url}': {e}", exc_info=True
         )
         return True  # Default to blocking in case of unexpected errors
+
+
+
+# --- Datetime Helpers (Copied from main.py if not in shared utils) ---
+def _datetime_to_iso(dt: Optional[datetime]) -> Optional[str]:
+    # ... (implementation) ...
+    if dt is None:
+        return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.isoformat()
+
+
+def _iso_to_datetime(iso_str: Optional[str]) -> Optional[datetime]:
+    # ... (implementation) ...
+    if iso_str is None:
+        return None
+    try:
+        return datetime.fromisoformat(iso_str)
+    except ValueError:
+        logger.warning(f"Could not parse ISO date string: {iso_str}")
+        return None
+
+
+# --- End Datetime Helpers ---
 
 
 # --- Basic Content Matching Utilities ---
