@@ -228,3 +228,146 @@ if __name__ == "__main__":
     print("------------------------------------")
 
     print("\n--- Model Verification End ---")
+# src/mcp_doc_retriever/models.py
+"""Pydantic models for the MCP Document Retriever API."""
+
+from datetime import datetime
+from typing import List, Optional, Literal, Any
+from pydantic import (
+    BaseModel,
+    Field,
+    AnyHttpUrl,
+    model_validator,
+    ConfigDict,
+)
+
+
+# Assuming SearchResultItem structure - adjust if it's defined elsewhere
+# If SearchResultItem is defined in searcher.py, import it there instead.
+class SearchResultItem(BaseModel):
+    """Represents a single search result item."""
+
+    source: str
+    local_path: str
+    match_details: Optional[str] = None
+    relevance_score: Optional[float] = None
+    content_block: Optional[str] = None
+
+
+class DocDownloadRequest(BaseModel):
+    """
+    Defines the expected request body for an API endpoint that triggers a download.
+    Validates conditional requirements based on source_type.
+    """
+
+    source_type: Literal["git", "website", "playwright"]
+    repo_url: Optional[AnyHttpUrl] = None
+    doc_path: Optional[str] = None
+    url: Optional[AnyHttpUrl] = None
+    download_id: Optional[str] = Field(
+        None,
+        description="Optional client-provided unique ID. If not provided, the server will generate one.",
+    )
+    depth: Optional[int] = Field(
+        None, ge=0, description="Crawling depth for website/playwright"
+    )
+    force: Optional[bool] = Field(None, description="Overwrite existing download data")
+
+    @model_validator(mode="after")
+    def check_conditional_fields(self):
+        # Avoid direct config import here if possible, rely on defaults or pass config values if needed
+        # Or use: from . import config
+        from . import config
+
+        st = self.source_type
+        if st == "git":
+            if self.url or self.depth is not None:
+                raise ValueError(
+                    "url and depth are not applicable when source_type is 'git'"
+                )
+            if not self.repo_url:
+                raise ValueError("repo_url is required when source_type is 'git'")
+            if self.doc_path is None:
+                self.doc_path = ""
+        elif st in ("website", "playwright"):
+            if self.repo_url or self.doc_path is not None:
+                raise ValueError(
+                    "repo_url and doc_path not applicable when source_type is 'website' or 'playwright'"
+                )
+            if not self.url:
+                raise ValueError(
+                    "url is required when source_type is 'website' or 'playwright'"
+                )
+            if self.depth is None:
+                self.depth = getattr(config, "DEFAULT_WEB_DEPTH", 5)
+        return self
+
+    model_config = ConfigDict(
+        json_schema_extra={
+            "examples": [  # Shortened for brevity
+                {
+                    "summary": "Git Example",
+                    "value": {
+                        "source_type": "git",
+                        "repo_url": "https://github.com/user/repo",
+                        "doc_path": "docs/",
+                    },
+                },
+                {
+                    "summary": "Website Example",
+                    "value": {
+                        "source_type": "website",
+                        "url": "https://example.com/docs",
+                        "depth": 2,
+                    },
+                },
+            ]
+        }
+    )
+
+
+class TaskStatus(BaseModel):
+    """
+    Response model for querying the status of a background download task via an API.
+    Matches the structure stored in the database.
+    """
+
+    download_id: str
+    status: Literal["pending", "running", "completed", "failed"]
+    message: Optional[str] = None
+    start_time: Optional[datetime] = None
+    end_time: Optional[datetime] = None
+    error_details: Optional[str] = None
+
+
+class SearchRequestBody(BaseModel):
+    """
+    Request body model specifically for the POST /search/{download_id} endpoint.
+    """
+
+    query: Optional[str] = None
+    scan_keywords: Optional[List[str]] = None
+    extract_selector: Optional[str] = None
+    extract_keywords: Optional[List[str]] = None
+    limit: Optional[int] = Field(10, gt=0)
+
+    @model_validator(mode="after")
+    def check_search_criteria(self):
+        if not self.query and not self.scan_keywords:
+            raise ValueError(
+                "Request must contain at least a 'query' or 'scan_keywords' field."
+            )
+        if self.extract_selector is not None and not self.extract_selector.strip():
+            raise ValueError("extract_selector cannot be empty if provided")
+        return self
+
+
+# Required by _perform_search -> perform_search
+class SearchRequest(BaseModel):
+    """Internal model encapsulating all search parameters."""
+
+    download_id: str
+    scan_keywords: List[str] = Field(default_factory=list)
+    extract_selector: str = "body"
+    extract_keywords: List[str] = Field(default_factory=list)
+    limit: int = 10

@@ -1,13 +1,13 @@
 # src/mcp_doc_retriever/project_state/db.py
 """
 Handles database interactions for project state, specifically lessons learned.
-Interacts with the lessons_learned.db SQLite database.
+Interacts with the lessons_learned.db SQLite database using standard sqlite3.
 """
 
-import aiosqlite
+import sqlite3  # Changed from aiosqlite
 import json
 import sys
-import asyncio
+# Removed asyncio import
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import List, Optional, Dict, Any, Tuple, Literal
@@ -23,10 +23,15 @@ except ImportError:
     )
 
     def _datetime_to_iso(dt: Optional[datetime]) -> Optional[str]:
-        return None
+        # Basic fallback
+        return dt.isoformat() if dt else None
 
     def _iso_to_datetime(iso_str: Optional[str]) -> Optional[datetime]:
-        return None
+        # Basic fallback
+        try:
+            return datetime.fromisoformat(iso_str) if iso_str else None
+        except (ValueError, TypeError):
+             return None
 # --- End helper import ---
 
 
@@ -52,44 +57,57 @@ class LessonLearned(BaseModel):
 
 
 # --- Database Initialization Function ---
-async def init_lessons_db(db_path: Path):
-    """Initializes the SQLite database AND CREATES THE TABLE at the specified path."""
-    conn = None
+def init_lessons_db(db_path: Path, existing_conn: Optional[sqlite3.Connection] = None): # Changed to def, type hint to sqlite3.Connection
+    """
+    Ensures the lessons_learned table exists.
+    If existing_conn is provided, uses it. Otherwise, creates a temporary connection.
+    """
+    conn_to_use = existing_conn
+    is_temp_conn = False
+    cursor = None
     try:
-        db_path.parent.mkdir(parents=True, exist_ok=True)
-        logger.info(f"Initializing lessons database connection to: {db_path}")
-        conn = await aiosqlite.connect(db_path)
-        async with conn.cursor() as cursor:
-            # Create lessons_learned table IF NOT EXISTS
-            await cursor.execute("""
-                CREATE TABLE IF NOT EXISTS lessons_learned (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    timestamp TEXT NOT NULL,
-                    severity TEXT,
-                    role TEXT NOT NULL,
-                    task TEXT,
-                    phase TEXT,
-                    problem TEXT NOT NULL,
-                    solution TEXT NOT NULL,
-                    tags TEXT, -- Store tags as JSON array string
-                    context TEXT,
-                    example TEXT
-                )
-            """)
-        await conn.commit()
+        if conn_to_use is None:
+            db_path.parent.mkdir(parents=True, exist_ok=True)
+            logger.info(f"Creating temporary connection to initialize lessons database: {db_path}")
+            conn_to_use = sqlite3.connect(db_path, timeout=10) # Changed to sqlite3.connect
+            is_temp_conn = True
+        else:
+             logger.debug(f"Using existing connection to ensure lessons table exists in {db_path}")
+
+        cursor = conn_to_use.cursor()
+        # Create lessons_learned table IF NOT EXISTS
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS lessons_learned (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                timestamp TEXT NOT NULL,
+                severity TEXT,
+                role TEXT NOT NULL,
+                task TEXT,
+                phase TEXT,
+                problem TEXT NOT NULL,
+                solution TEXT NOT NULL,
+                tags TEXT, -- Store tags as JSON array string
+                context TEXT,
+                example TEXT
+            )
+        """)
+        conn_to_use.commit() # Commit on the connection used
         logger.info(
-            f"Lessons database initialized and table 'lessons_learned' ensured at {db_path}."
+            f"Table 'lessons_learned' ensured in database {db_path}."
         )
     except Exception as e:
         logger.critical(
-            f"Failed to initialize lessons database at {db_path}: {e}", exc_info=True
+            f"Failed to ensure lessons_learned table in {db_path}: {e}", exc_info=True
         )
-        # Depending on requirements, you might want to raise this
-        # raise
+        # Raise the exception to signal failure
+        raise
     finally:
-        if conn:
+        if cursor:
+             cursor.close() # Ensure cursor is closed
+        # Only close the connection if we created a temporary one
+        if is_temp_conn and conn_to_use:
             try:
-                await conn.close()
+                conn_to_use.close() # Removed await
                 logger.debug(
                     f"Closed temporary connection used for initializing lessons DB: {db_path}"
                 )
@@ -98,46 +116,50 @@ async def init_lessons_db(db_path: Path):
 
 
 # --- Database CRUD Functions for Lessons (Accept connection) ---
-async def add_lesson(
-    db_conn: aiosqlite.Connection, lesson: LessonLearned
+def add_lesson( # Changed to def
+    db_conn: sqlite3.Connection, lesson: LessonLearned # Changed type hint
 ) -> Optional[int]:
     """Adds a new lesson learned record and returns the new row ID, or None on failure."""
     if not db_conn:
         logger.error("Database connection not provided, cannot add lesson.")
         return None
+    cursor = None # Initialize cursor
     try:
         lesson_data = lesson.model_dump(exclude={"id"})  # Exclude ID for insert
-        async with db_conn.cursor() as cursor:
-            await cursor.execute(
-                """
-                INSERT INTO lessons_learned
-                (timestamp, severity, role, task, phase, problem, solution, tags, context, example)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    _datetime_to_iso(lesson_data["timestamp"]),
-                    lesson_data["severity"],
-                    lesson_data["role"],
-                    lesson_data["task"],
-                    lesson_data["phase"],
-                    lesson_data["problem"],
-                    lesson_data["solution"],
-                    json.dumps(lesson_data["tags"]),
-                    lesson_data["context"],
-                    lesson_data["example"],
-                ),
-            )
-            new_id = cursor.lastrowid
-        await db_conn.commit()
+        cursor = db_conn.cursor() # Changed from async with
+        cursor.execute( # Removed await
+            """
+            INSERT INTO lessons_learned
+            (timestamp, severity, role, task, phase, problem, solution, tags, context, example)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                _datetime_to_iso(lesson_data["timestamp"]),
+                lesson_data["severity"],
+                lesson_data["role"],
+                lesson_data["task"],
+                lesson_data["phase"],
+                lesson_data["problem"],
+                lesson_data["solution"],
+                json.dumps(lesson_data["tags"]),
+                lesson_data["context"],
+                lesson_data["example"],
+            ),
+        )
+        new_id = cursor.lastrowid
+        db_conn.commit() # Removed await
         logger.info(f"Added lesson learned (ID: {new_id}) from role: {lesson.role}")
         return new_id
     except Exception as e:
         logger.error(f"Failed to add lesson learned: {e}", exc_info=True)
         return None
+    finally:
+        if cursor:
+            cursor.close() # Ensure cursor is closed
 
 
-async def update_lesson(
-    db_conn: aiosqlite.Connection, lesson_id: int, lesson_update_data: LessonLearned
+def update_lesson( # Changed to def
+    db_conn: sqlite3.Connection, lesson_id: int, lesson_update_data: LessonLearned # Changed type hint
 ) -> bool:
     """Updates an existing lesson learned record identified by its ID."""
     if not db_conn:
@@ -146,6 +168,7 @@ async def update_lesson(
     if not lesson_id:
         logger.error("Lesson ID is required for update.")
         return False
+    cursor = None # Initialize cursor
     try:
         update_data = lesson_update_data.model_dump(exclude={"id"}, exclude_unset=True)
         if not update_data:
@@ -167,10 +190,10 @@ async def update_lesson(
         sql = f"UPDATE lessons_learned SET {set_clause} WHERE id = ?"
         params.append(lesson_id)
 
-        async with db_conn.cursor() as cursor:
-            await cursor.execute(sql, tuple(params))
-            rowcount = cursor.rowcount
-        await db_conn.commit()
+        cursor = db_conn.cursor() # Changed from async with
+        cursor.execute(sql, tuple(params)) # Removed await
+        rowcount = cursor.rowcount
+        db_conn.commit() # Removed await
 
         if rowcount > 0:
             logger.info(
@@ -185,9 +208,12 @@ async def update_lesson(
     except Exception as e:
         logger.error(f"Failed to update lesson ID {lesson_id}: {e}", exc_info=True)
         return False
+    finally:
+        if cursor:
+            cursor.close() # Ensure cursor is closed
 
 
-async def delete_lesson(db_conn: aiosqlite.Connection, lesson_id: int) -> bool:
+def delete_lesson(db_conn: sqlite3.Connection, lesson_id: int) -> bool: # Changed to def, type hint
     """Deletes a lesson learned record by its ID."""
     if not db_conn:
         logger.error("Database connection not provided, cannot delete lesson.")
@@ -195,13 +221,14 @@ async def delete_lesson(db_conn: aiosqlite.Connection, lesson_id: int) -> bool:
     if not lesson_id:
         logger.error("Lesson ID is required for deletion.")
         return False
+    cursor = None # Initialize cursor
     try:
-        async with db_conn.cursor() as cursor:
-            await cursor.execute(
-                "DELETE FROM lessons_learned WHERE id = ?", (lesson_id,)
-            )
-            rowcount = cursor.rowcount
-        await db_conn.commit()
+        cursor = db_conn.cursor() # Changed from async with
+        cursor.execute( # Removed await
+            "DELETE FROM lessons_learned WHERE id = ?", (lesson_id,)
+        )
+        rowcount = cursor.rowcount
+        db_conn.commit() # Removed await
         if rowcount > 0:
             logger.info(f"Successfully deleted lesson ID: {lesson_id}")
             return True
@@ -211,10 +238,13 @@ async def delete_lesson(db_conn: aiosqlite.Connection, lesson_id: int) -> bool:
     except Exception as e:
         logger.error(f"Failed to delete lesson ID {lesson_id}: {e}", exc_info=True)
         return False
+    finally:
+        if cursor:
+            cursor.close() # Ensure cursor is closed
 
 
-async def find_lessons(
-    db_conn: aiosqlite.Connection,
+def find_lessons( # Changed to def
+    db_conn: sqlite3.Connection, # Changed type hint
     search_term: Optional[str] = None,
     tags: Optional[List[str]] = None,
     role: Optional[str] = None,
@@ -254,10 +284,14 @@ async def find_lessons(
     params.append(limit)
 
     results: List[LessonLearned] = []
+    cursor = None # Initialize cursor
     try:
-        async with db_conn.cursor() as cursor:
-            await cursor.execute(query, tuple(params))
-            rows = await cursor.fetchall()
+        # Use a context manager for the cursor for standard sqlite3
+        with db_conn.cursor() as cursor:
+            # Set row factory *after* creating cursor for standard sqlite3
+            cursor.row_factory = sqlite3.Row
+            cursor.execute(query, tuple(params)) # Removed await
+            rows = cursor.fetchall() # Removed await
 
         logger.debug(
             f"Fetched {len(rows)} rows from lessons_learned table."
@@ -326,104 +360,115 @@ async def find_lessons(
             exc_info=True,
         )
         return []
+    # No finally needed for cursor if using 'with' context manager
 
+# --- Standalone Execution / Example (Synchronous Version) ---
+# Note: The original async example is commented out below the sync version
+def _example_usage_sync():
+    logger.remove()
+    logger.add(sys.stderr, level="DEBUG")
 
-# --- Standalone Execution / Example ---
+    example_db_path = Path("./temp_lessons_learned_sync_example.db")
+    conn = None
+    try:
+        # Initialize using the function from this module
+        init_lessons_db(example_db_path)
+
+        # Connect for CRUD operations
+        logger.info(
+            f"Connecting to temporary DB for CRUD example: {example_db_path}"
+        )
+        conn = sqlite3.connect(example_db_path, timeout=10)
+
+        # Add lessons
+        lesson1_data = LessonLearned(
+            role="SyncTester",
+            problem="Sync problem",
+            solution="Sync solution",
+            tags=["sync", "tag1"],
+        )
+        new_id1 = add_lesson(conn, lesson1_data)
+        logger.info(f"Added sync lesson 1 with ID: {new_id1}")
+        lesson2_data = LessonLearned(
+            role="SyncCoder",
+            problem="Sync coding issue",
+            solution="Sync code fix",
+            tags=["sync_code", "fix"],
+        )
+        new_id2 = add_lesson(conn, lesson2_data)
+        logger.info(f"Added sync lesson 2 with ID: {new_id2}")
+
+        # Find lessons
+        logger.info("\nFinding all sync lessons:")
+        found_all = find_lessons(conn, limit=5)
+        for l in found_all:
+            print(f"  - Found Sync: {l.model_dump_json(indent=1)}")
+        assert len(found_all) == 2
+
+        # Update a lesson
+        if new_id1:
+            logger.info(f"\nUpdating sync lesson ID {new_id1}:")
+            update_data = LessonLearned(
+                role="SyncTester Updated",
+                problem="Updated Sync Problem",
+                solution="Updated Sync Solution",
+                tags=["sync", "tag1", "updated"],
+                severity="WARN",
+            )
+            update_success = update_lesson(conn, new_id1, update_data)
+            logger.info(f"Sync Update successful: {update_success}")
+            assert update_success
+            logger.info("\nFinding updated sync lesson:")
+            found_updated = find_lessons(conn, search_term="Updated Sync Problem")
+            assert len(found_updated) == 1
+            assert found_updated[0].role == "SyncTester Updated"
+            assert found_updated[0].severity == "WARN"
+            assert "updated" in found_updated[0].tags
+            for l in found_updated:
+                print(f"  - Found Updated Sync: {l.model_dump_json(indent=1)}")
+
+        # Delete a lesson
+        if new_id2:
+            logger.info(f"\nDeleting sync lesson ID {new_id2}:")
+            delete_success = delete_lesson(conn, new_id2)
+            logger.info(f"Sync Delete successful: {delete_success}")
+            assert delete_success
+            logger.info("\nFinding all sync lessons after delete:")
+            found_after_delete = find_lessons(conn, limit=5)
+            assert len(found_after_delete) == 1
+            assert found_after_delete[0].id == new_id1
+            for l in found_after_delete:
+                print(f"  - Found Sync After Delete: {l.model_dump_json(indent=1)}")
+
+        print("\n✓ Standalone Synchronous CRUD tests PASSED.")
+
+    except Exception as e:
+        logger.error(f"Error during sync example usage: {e}", exc_info=True)
+        print("\n✗ Standalone Synchronous CRUD tests FAILED.")
+    finally:
+        if conn:
+            conn.close()
+            logger.info("Closed temporary sync DB connection.")
+        if example_db_path.exists():
+            try:
+                example_db_path.unlink()
+                logger.info(f"Removed temporary sync DB: {example_db_path}")
+            except OSError as e:
+                logger.error(f"Failed to remove temporary sync DB: {e}")
+
+if __name__ == "__main__":
+    try:
+        _example_usage_sync()
+    except KeyboardInterrupt:
+        print("Example interrupted.")
+    except Exception:
+        # Error already logged in _example_usage_sync
+        sys.exit(1)
+
+# --- Original Async Example (Commented Out) ---
 # if __name__ == "__main__":
-
 #     async def _example_usage():
-#         logger.remove()
-#         logger.add(sys.stderr, level="DEBUG")
-
-#         # Use a distinct name for the example DB file
-#         example_db_path = Path("./temp_lessons_learned_example.db")
-#         conn = None
-#         try:
-#             # Initialize using the function from this module
-#             await init_lessons_db(example_db_path)
-
-#             # Connect for CRUD operations
-#             logger.info(
-#                 f"Connecting to temporary DB for CRUD example: {example_db_path}"
-#             )
-#             conn = await aiosqlite.connect(example_db_path)
-
-#             # Add lessons
-#             lesson1_data = LessonLearned(
-#                 role="Tester",
-#                 problem="Initial problem",
-#                 solution="Initial solution",
-#                 tags=["init", "tag1"],
-#             )
-#             new_id1 = await add_lesson(conn, lesson1_data)
-#             logger.info(f"Added lesson 1 with ID: {new_id1}")
-#             lesson2_data = LessonLearned(
-#                 role="Coder",
-#                 problem="Coding issue",
-#                 solution="Code fix",
-#                 tags=["code", "fix"],
-#             )
-#             new_id2 = await add_lesson(conn, lesson2_data)
-#             logger.info(f"Added lesson 2 with ID: {new_id2}")
-
-#             # Find lessons
-#             logger.info("\nFinding all lessons:")
-#             found_all = await find_lessons(conn, limit=5)
-#             for l in found_all:
-#                 print(f"  - Found: {l.model_dump_json(indent=1)}")
-#                 assert len(found_all) == 2
-
-#             # Update a lesson
-#             if new_id1:
-#                 logger.info(f"\nUpdating lesson ID {new_id1}:")
-#                 update_data = LessonLearned(
-#                     role="Tester Updated",
-#                     problem="Updated Problem",
-#                     solution="Updated Solution",
-#                     tags=["init", "tag1", "updated"],
-#                     severity="WARN",
-#                 )
-#                 update_success = await update_lesson(conn, new_id1, update_data)
-#                 logger.info(f"Update successful: {update_success}")
-#                 assert update_success
-#                 logger.info("\nFinding updated lesson:")
-#                 found_updated = await find_lessons(conn, search_term="Updated Problem")
-#                 assert len(found_updated) == 1
-#                 assert found_updated[0].role == "Tester Updated"
-#                 assert found_updated[0].severity == "WARN"
-#                 assert "updated" in found_updated[0].tags
-#                 for l in found_updated:
-#                     print(f"  - Found Updated: {l.model_dump_json(indent=1)}")
-
-#             # Delete a lesson
-#             if new_id2:
-#                 logger.info(f"\nDeleting lesson ID {new_id2}:")
-#                 delete_success = await delete_lesson(conn, new_id2)
-#                 logger.info(f"Delete successful: {delete_success}")
-#                 assert delete_success
-#                 logger.info("\nFinding all lessons after delete:")
-#                 found_after_delete = await find_lessons(conn, limit=5)
-#                 assert len(found_after_delete) == 1
-#                 assert found_after_delete[0].id == new_id1
-#                 for l in found_after_delete:
-#                     print(f"  - Found After Delete: {l.model_dump_json(indent=1)}")
-
-#             print("\n✓ Standalone CRUD tests PASSED.")
-
-#         except Exception as e:
-#             logger.error(f"Error during example usage: {e}", exc_info=True)
-#             print("\n✗ Standalone CRUD tests FAILED.")
-#         finally:
-#             if conn:
-#                 await conn.close()
-#                 logger.info("Closed temporary DB connection.")
-#             if example_db_path.exists():
-#                 try:
-#                     example_db_path.unlink()
-#                     logger.info(f"Removed temporary DB: {example_db_path}")
-#                 except OSError as e:
-#                     logger.error(f"Failed to remove temporary DB: {e}")
-
+#         # ... (original async example code) ...
 #     try:
 #         asyncio.run(_example_usage())
 #     except KeyboardInterrupt:

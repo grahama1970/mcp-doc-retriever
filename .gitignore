@@ -141,3 +141,5 @@ examples/
 tests/fixtures/
 # Task file
 task.md
+
+examples/

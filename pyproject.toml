@@ -25,9 +25,11 @@ dependencies = [
     "typer>=0.12.5", # Added for CLI functionality
     "aiosqlite>=0.21.0",
 ]
+    "python-arango==8.1.6",
 
 [project.scripts]
 mcp-doc-retriever = "mcp_doc_retriever.cli:app"
+lessons-cli = "mcp_doc_retriever.lessons_cli:app"
 
 [project.optional-dependencies]
 dev = ["ruff"]

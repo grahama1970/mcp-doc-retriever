@@ -43,7 +43,7 @@ graph TD
     end
 
     subgraph "Docker Container: mcp-doc-retriever"
-        FAPI("🌐 FastAPI - main.py") -- Manages --> TaskStore("📝 Task Status Store (In-Memory)")
+        FAPI("🌐 FastAPI - main.py") -- Manages --> TaskStore("📝 Task Status Store (SQLite DB - task_status.db)")
         FAPI -- Uses --> SharedExecutor("🔄 ThreadPoolExecutor")
 
         subgraph "Download Flow (Background Task)"
@@ -122,7 +122,7 @@ This project adheres to the **Roomodes Agentic Development Framework**. This mea
 *   **`.roomodes`:** Defines the roles (modes) like `Planner`, `Senior Coder`, `Tester`, `Reviewer`, etc., specifying their goals and constraints.
 *   **`.roorules`:** Contains global constraints and guidelines applicable to all agents, ensuring consistency in coding style, documentation, testing, and error handling.
 *   **`task.md`:** High-level plan outlining features, refactoring steps, testing phases, and documentation requirements, primarily used by the `Planner` agent.
-*   **Agent Interaction:** The typical flow involves the `Planner` breaking down `task.md` into smaller sub-tasks, delegating coding tasks to `Senior Coder`, testing tasks to `Tester`, etc. Agents interact, review each other's work, and use provided documentation (`README.md`, `repo_docs/`, `lessons_learned.json`) for context.
+*   **Agent Interaction:** The typical flow involves the `Planner` breaking down `task.md` into smaller sub-tasks, delegating coding tasks to `Senior Coder`, testing tasks to `Tester`, etc. Agents interact, review each other's work, and use provided documentation (`README.md`, `repo_docs/`, `lessons_learned` table in `project_state.db`) for context.
 
 This agentic approach aims to automate parts of the development lifecycle, enforce standards, and potentially improve code quality and development speed, especially for well-defined MCP-style services.
 
@@ -181,7 +181,6 @@ mcp-doc-retriever/
         │   ├── advanced_extractor.py # Advanced block-based extraction
         │   └── helpers.py    # Search-specific helpers (file access, content parsing)
         └── docs/             # Internal documentation and agent aids
-            └── lessons_learned.json # Agent-logged development insights
 
 # Download data lives in the Docker volume 'download_data', mapped to /app/downloads.
 # /app/downloads/index/ contains *.jsonl index files
@@ -406,7 +405,7 @@ This project adheres to specific documentation standards, primarily governed by 
 *   **Code Comments:** Use inline comments (`#`) to explain complex algorithms, business logic decisions, assumptions, or potential workarounds that aren't immediately obvious from the code itself.
 *   **README Accuracy:** This `README.md` file should be kept up-to-date with the project's features, API specifications, setup instructions, and core concepts.
 *   **Agent Knowledge Base:**
-    *   **Lessons Learned:** Reusable solutions, non-obvious fixes, or valuable insights discovered during development (especially by agents) are logged in `src/mcp_doc_retriever/docs/lessons_learned.json`.
+    *   **Lessons Learned:** Reusable solutions, non-obvious fixes, or valuable insights discovered during development (especially by agents) are logged in the `lessons_learned` table in the `project_state.db` SQLite database.
     *   **Repository Docs:** Relevant documentation for third-party libraries used in the project should be stored in the `repo_docs/` directory for agent reference.
 ```
 
