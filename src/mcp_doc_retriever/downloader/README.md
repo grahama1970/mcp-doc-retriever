@@ -171,7 +171,7 @@ mcp-doc-retriever/
         ├── models.py         # Pydantic models (API, Index, Status, ContentBlock)
         ├── utils.py          # Shared utilities (URL canonicalization, SSRF check, keyword matching)
         ├── docs/             # Internal project documentation / lessons
-        │   └── lessons_learned.json # Agent knowledge base
+        │   # (lessons_learned.json is obsolete, replaced by ArangoDB)
         ├── downloader/       # --- Sub-package for Downloading ---
         │   ├── __init__.py   # Make downloader a package
         │   ├── workflow.py   # Main download orchestration logic
@@ -314,6 +314,6 @@ This project adheres to specific documentation standards, primarily governed by 
 *   **Code Comments:** Use inline comments (`#`) to explain complex algorithms, business logic decisions, assumptions, or potential workarounds that aren't immediately obvious from the code itself.
 *   **README Accuracy:** This `README.md` file should be kept up-to-date with the project's features, API specifications, setup instructions, and core concepts.
 *   **Agent Knowledge Base:**
-    *   **Lessons Learned:** Reusable solutions, non-obvious fixes, or valuable insights discovered during development (especially by agents) are logged in `src/mcp_doc_retriever/docs/lessons_learned.json`.
+    *   **Lessons Learned:** Reusable solutions, non-obvious fixes, or valuable insights discovered during development (especially by agents) are logged in the `lessons_learned` collection in the ArangoDB database (see main README and `.roorules`).
     *   **Repository Docs:** Relevant documentation for third-party libraries used in the project should be stored in the `repo_docs/` directory for agent reference.
 ```

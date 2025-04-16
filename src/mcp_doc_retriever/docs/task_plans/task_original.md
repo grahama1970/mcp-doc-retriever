@@ -13,7 +13,7 @@ Core Components:
 *   File Storage:
     *   Content: `/app/downloads/content/{hostname}/{path}/{filename}.html` (mirrored structure).
     *   Index: `/app/downloads/index/{download_id}.jsonl` (maps URLs to local paths, content MD5, status).
-*   Documentation: Sparse download of library docs, specific header comments, inline examples, lessons_learned.json.
+*   Documentation: Sparse download of library docs, specific header comments, inline examples, lessons_learned collection in ArangoDB.
 *   File Size Limit: <= 500 lines per Python file where feasible.
 
 Recovery Plan (If Session Crashes):
@@ -77,8 +77,8 @@ gantt
 **Phase 1: Project Setup & Core Dependencies**
 
 *   [X] **Task 1.1: Initialize Project Structure & Packaging**
-    *   Action: Create directory structure (`src/mcp_doc_retriever`, `scripts`, `repo_docs`, `src/mcp_doc_retriever/docs`), `pyproject.toml`, `.gitignore`. Initialize `uv`. Create placeholder `src/mcp_doc_retriever/docs/lessons_learned.json`.
-    *   Deliverable: Project directory structure, `pyproject.toml`, `lessons_learned.json`.
+    *   Action: Create directory structure (`src/mcp_doc_retriever`, `scripts`, `repo_docs`, `src/mcp_doc_retriever/docs`), `pyproject.toml`, `.gitignore`. Initialize `uv`. (Note: `lessons_learned.json` is obsolete, replaced by ArangoDB).
+    *   Deliverable: Project directory structure, `pyproject.toml`.
 *   [X] **Task 1.2: Add Basic Dependencies**
     *   Action: Add FastAPI, Uvicorn, Pydantic, Requests, BeautifulSoup4, lxml, Playwright using `uv add`. (Playwright browser install handled in Dockerfile).
     *   Deliverable: Updated `pyproject.toml`, `uv.lock`. Confirmation of dependency installation locally (if tested).
@@ -95,7 +95,7 @@ gantt
         *   Project directory structure (`src/mcp_doc_retriever`, `scripts`, `repo_docs`, `src/mcp_doc_retriever/docs`) created.
         *   `pyproject.toml` and `.gitignore` files created and configured.
         *   `uv` initialized and basic dependencies (FastAPI, Uvicorn, Pydantic, Requests, BeautifulSoup4, lxml, Playwright) added.
-        *   Placeholder `src/mcp_doc_retriever/docs/lessons_learned.json` created.
+        *   (Note: `lessons_learned.json` is obsolete, replaced by ArangoDB).
         *   Basic FastAPI app in `main.py` runs and placeholder endpoints are accessible.
         *   Demo showcasing project structure and basic FastAPI app running.
 

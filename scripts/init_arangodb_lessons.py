@@ -1,26 +1,5 @@
-# scripts/init_arangodb_lessons.py
 """
 Initializes the ArangoDB database, collection, and view for storing lessons learned.
-
-This script connects to ArangoDB using environment variables and ensures the necessary
-database (`doc_retriever`), collection (`lessons_learned`), and ArangoSearch view
-(`lessons_view`) are created idempotently.
-
-Links:
-- python-arango documentation: (Referencing local copy at git_downloader_test/arango_full/docs/)
-  - Connection: git_downloader_test/arango_full/docs/connection.rst
-  - Database Management: git_downloader_test/arango_full/docs/database.rst
-  - Collection Management: git_downloader_test/arango_full/docs/collection.rst
-  - View Management: git_downloader_test/arango_full/docs/view.rst
-
-Environment Variables:
-- ARANGO_HOST: The ArangoDB host URL (e.g., http://localhost:8529).
-- ARANGO_USER: The ArangoDB username (e.g., root).
-- ARANGO_PASSWORD: The ArangoDB password.
-- ARANGO_DB: The target database name (e.g., doc_retriever).
-
-Sample Usage (requires ArangoDB running and env vars set):
-uv run python scripts/init_arangodb_lessons.py
 """
 
 import os
@@ -32,7 +11,6 @@ from arango.exceptions import (
     ViewCreateError,
     DatabaseListError,
     CollectionListError,
-    ViewListError,
 )
 
 # Configure logging
@@ -47,46 +25,51 @@ ARANGO_DB_NAME = os.environ.get("ARANGO_DB", "doc_retriever")
 COLLECTION_NAME = "lessons_learned"
 VIEW_NAME = "lessons_view"
 
-# View definition for ArangoSearch
+# --- Constants for Fields (from user example) ---
+from typing import List, Dict, Any # Add typing import
+SEARCH_FIELDS: List[str] = ["problem", "solution", "context", "example"]
+STORED_VALUE_FIELDS: List[str] = ["timestamp", "severity", "role", "task", "phase"]
+TEXT_ANALYZER = "text_en"
+TAG_ANALYZER = "identity"
+
+# --- Improved View Definition (from user example) ---
 VIEW_DEFINITION = {
+    # Link the view to the collection
     "links": {
         COLLECTION_NAME: {
+            # Define fields to be indexed and how
             "fields": {
-                "problem": {"analyzers": ["text_en"]},
-                "solution": {"analyzers": ["text_en"]},
-                "context": {"analyzers": ["text_en"]},
-                "example": {"analyzers": ["text_en"]},
-                "tags": {"analyzers": ["identity"]}, # Treat tags as whole terms
+                # Boost relevance for matches in 'problem' and 'solution'
+                "problem": {"analyzers": [TEXT_ANALYZER], "boost": 2.0},
+                "solution": {"analyzers": [TEXT_ANALYZER], "boost": 1.5},
+                "context": {"analyzers": [TEXT_ANALYZER]},
+                "example": {"analyzers": [TEXT_ANALYZER]},
+                "tags": {"analyzers": [TAG_ANALYZER]}, # Use identity for exact tag matches
             },
             "includeAllFields": False, # Only index specified fields
-            "storeValues": "id", # Store document IDs for faster retrieval
-            "trackListPositions": False,
+            "storeValues": "id",      # Store doc IDs for efficient retrieval
+            "trackListPositions": False, # Typically not needed for BM25, saves space
         }
     },
-    "primarySort": [{"field": "timestamp", "direction": "desc"}], # Optional: sort results by timestamp
+    # Default sort order (can be overridden in queries)
+    "primarySort": [{"field": "timestamp", "direction": "desc"}],
     "primarySortCompression": "lz4",
-    "storedValues": [ # Optional: store values directly in the view
-        {"fields": ["timestamp", "severity", "role", "task", "phase"], "compression": "lz4"}
+    # Store specific fields directly in the view for potential optimizations
+    "storedValues": [
+        {"fields": STORED_VALUE_FIELDS, "compression": "lz4"}
     ],
-    "writebufferIdle": 64,
-    "writebufferActive": 0,
-    "writebufferSizeMax": 33554432,
-    "consolidationIntervalMsec": 1000, # Consolidate frequently for smaller datasets/testing
+    # Tuning parameters for index maintenance (adjust based on workload)
     "consolidationPolicy": {
-        "type": "tier",
-        "segmentsMin": 1,
-        "segmentsMax": 10,
-        "segmentsBytesMax": 536870912,
-        "segmentsBytesFloor": 2097152,
-        "minScore": 0
+        "type": "tier",         # Strategy for merging index segments
+        "threshold": 0.1,       # Min ratio of segments to consolidate
+        "segmentsMin": 1,       # Min number of segments before consolidation
+        "segmentsMax": 10,      # Max number of segments before consolidation
+        "segmentsBytesMax": 5 * 1024**3,  # Max total size (5GB)
+        "segmentsBytesFloor": 2 * 1024**2,   # Segments smaller than this are always candidates (2MB)
     },
-    "cleanupIntervalStep": 2
+    "commitIntervalMsec": 1000, # How often changes are committed to the index (ms)
+    "consolidationIntervalMsec": 10000, # How often consolidation checks run (ms)
 }
-
-# BM25 scoring parameters (can be added to fields if needed, default is BM25)
-# Example for 'problem' field:
-# "problem": {"analyzers": ["text_en"], "searchField": True, "features": ["frequency", "norm", "position", "offset"], "trackListPositions": False, "cache": False, "primarySort": False, "primarySortCompression": "lz4", "storedValues": [], "analyzers": ["text_en"], "includeAllFields": False, "trackListPositions": False, "storeValues": "id", "fields": {}, "primarySort": [], "primarySortCompression": "lz4", "storedValues": [], "writebufferIdle": 64, "writebufferActive": 0, "writebufferSizeMax": 33554432, "consolidationIntervalMsec": 1000, "consolidationPolicy": {"type": "tier", "segmentsMin": 1, "segmentsMax": 10, "segmentsBytesMax": 536870912, "segmentsBytesFloor": 2097152, "minScore": 0}, "cleanupIntervalStep": 2}
-# Note: BM25 is the default scorer in ArangoSearch, specific parameters (k1, b) can be set in AQL queries if needed.
 
 
 def initialize_arangodb():
@@ -128,28 +111,33 @@ def initialize_arangodb():
             logger.error(f"Error managing collection '{COLLECTION_NAME}': {e}")
             raise
 
-        # Ensure the ArangoSearch view exists.
+        # Ensure the ArangoSearch view exists and is up-to-date.
+        from arango.exceptions import ViewUpdateError, ArangoServerError # Import needed exceptions locally
         try:
             if not db.has_view(VIEW_NAME):
-                logger.info(f"ArangoSearch View '{VIEW_NAME}' not found. Creating...")
-                # Create the view with the specified properties
+                logger.info(f"View '{VIEW_NAME}' not found. Creating...")
                 db.create_view(VIEW_NAME, view_type="arangosearch", properties=VIEW_DEFINITION)
-                logger.info(f"ArangoSearch View '{VIEW_NAME}' created successfully.")
+                logger.info(f"View '{VIEW_NAME}' created successfully.") # Changed to info
             else:
-                logger.info(f"ArangoSearch View '{VIEW_NAME}' already exists.")
-                # Optional: Check if properties match and update if necessary
-                # view = db.view(VIEW_NAME)
-                # current_props = view.properties()
-                # if current_props != VIEW_DEFINITION: # Basic check, might need deeper comparison
-                #     logger.warning(f"View '{VIEW_NAME}' exists but properties differ. Updating...")
-                #     view.update_properties(VIEW_DEFINITION)
-                #     logger.info(f"View '{VIEW_NAME}' properties updated.")
+                logger.info(f"View '{VIEW_NAME}' already exists. Checking properties...")
+                # Update properties if view exists to apply changes in definition
+                current_props = db.view(VIEW_NAME).properties()
+                # Basic check if properties seem different (doesn't compare perfectly nested structures always)
+                # A more robust check might involve deep comparison if needed
+                if current_props.get('links') != VIEW_DEFINITION.get('links') or \
+                   current_props.get('consolidationPolicy') != VIEW_DEFINITION.get('consolidationPolicy') or \
+                   current_props.get('primarySort') != VIEW_DEFINITION.get('primarySort'):
+                    logger.info(f"Updating properties for view '{VIEW_NAME}'...")
+                    db.update_view(VIEW_NAME, properties=VIEW_DEFINITION)
+                    logger.info(f"View '{VIEW_NAME}' properties updated.") # Changed to info
+                else:
+                    logger.info(f"View '{VIEW_NAME}' properties seem up-to-date.")
 
-        except (ViewCreateError, ViewListError) as e:
-            logger.error(f"Error managing ArangoSearch view '{VIEW_NAME}': {e}")
+        except (ViewCreateError, ViewUpdateError, ArangoServerError) as e: # Added ViewUpdateError
+            logger.error(f"Failed to ensure view '{VIEW_NAME}': {e}")
             raise
 
-        logger.info("ArangoDB initialization check completed successfully.")
+        logger.info("ArangoDB initialization check completed successfully.") # Changed to info
 
     except Exception as e:
         logger.error(f"An unexpected error occurred during ArangoDB initialization: {e}")

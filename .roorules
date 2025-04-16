@@ -6,18 +6,17 @@
 - **Running Commands with Temporary Environment Variables:** When a task requires running a command with a specific environment variable set *only* for that command's execution (e.g., setting `MCP_TEST_BASE_URL` for pytest), **do not** rely on the simple `VAR=value command args...` syntax,recovery IS performed, **Error/Ambiguity Handling - Step 5 (Prepare for Human Debugging) is skipped** for that specific failure, as the problematic code state is discarded.
 
 # Lesson Logging and Management (Updated)
-- **Lesson Logging Rule (Add):** If you successfully employ a novel technique, pattern, or workaround, *or* if prompted by your delegator, add a concise lesson learned entry to the `lessons_learned` table in the SQLite database (`/app/downloads/project_state.db`). **Use the dedicated CLI script `src/mcp_doc_retriever/lessons_cli.py add ...` via the `command` tool (e.g., `uv run python src/mcp_doc_retriever/lessons_cli.py add --role ...`) OR a direct SQL `INSERT` statement via the `command` tool (using `sqlite3`).** Clearly state your role in the entry. **Do not use file system tools (`write_to_file`, etc.) for lessons learned.** *Note: Modes `Intern Coder` and `Presenter` do not log lessons.* Custom mode instructions specify triggers for logging specific types of lessons (e.g., planning, orchestration, technical).
-    - **Database Path:** `/app/downloads/project_state.db` (corresponds to `./downloads/project_state.db` on host)
-    - **Table Name:** `lessons_learned`
-    - **Columns:** `timestamp`, `severity`, `role`, `task`, `phase`, `problem`, `solution`, `tags`, `context`, `example`.
+- **Lesson Logging Rule (Add):** If you successfully employ a novel technique, pattern, or workaround, *or* if prompted by your delegator, add a concise lesson learned entry to the `lessons_learned` collection in the ArangoDB database (`doc_retriever` by default). **Use the dedicated CLI script `src/mcp_doc_retriever/lessons_cli.py add ...` via the `command` tool.** Clearly state your role in the entry. **Do not use file system tools (`write_to_file`, etc.) or direct database commands for adding lessons.** *Note: Modes `Intern Coder` and `Presenter` do not log lessons.* Custom mode instructions specify triggers for logging specific types of lessons (e.g., planning, orchestration, technical).
+    - **Database Connection:** Managed via environment variables: `ARANGO_HOST`, `ARANGO_USER`, `ARANGO_PASSWORD`, `ARANGO_DB`.
+    - **Collection Name:** `lessons_learned` (within the database specified by `ARANGO_DB`).
+    - **Document Structure:** Similar fields to the old SQLite table (`timestamp`, `severity`, `role`, `task`, `phase`, `problem`, `solution`, `tags` (as list), `context`, `example`). Timestamp is added automatically if omitted.
     - **Preferred Tool:** `command`
-    - **Preferred Command Syntax (CLI Script):** `uv run python src/mcp_doc_retriever/lessons_cli.py add --role "<ROLE>" --problem "<PROBLEM>" --solution "<SOLUTION>" [--tag "<TAG1>" --tag "<TAG2>" ...] [--severity <SEVERITY>] [--task "<TASK>"] [--phase "<PHASE>"] [--context "<CONTEXT>"] [--example "<EXAMPLE>"] [--db-path <DB_PATH>]`
-    - **Alternative Command Syntax (Direct SQL):** `sqlite3 <database_path> "<SQL_INSERT_STATEMENT>"`
-    - **Values:**
-        - `timestamp`: Use SQLite function `datetime('now', 'utc')`.
-        - `role`: Your current agent role (e.g., 'Senior Coder').
-        - `tags`: Provide as a valid JSON array string, e.g., `'["tag1", "tag2"]'`. Use `json_array('tag1', 'tag2')` if supported by the `sqlite3` version, otherwise construct the string carefully.
-        - Text Fields (`problem`, `solution`, `context`, `example`): ** as agent command tools may misinterpret it. **Instead, explicitly use the `env` command:**
+    - **Preferred Command Syntax (CLI Script):** `uv run python src/mcp_doc_retriever/lessons_cli.py add --role "<ROLE>" --problem "<PROBLEM>" --solution "<SOLUTION>" [--tag "<TAG1>" --tag "<TAG2>" ...] [--severity <SEVERITY>] [--task "<TASK>"] [--phase "<PHASE>"] [--context "<CONTEXT>"] [--example "<EXAMPLE>"]` (Note: `--db-path` removed)
+    - **Alternative Command Syntax:** None. Use the CLI script.
+    - **Values:** Handled by the `lessons_cli.py` script and `arango_db.py` module. Tags should be provided via multiple `--tag` arguments. Text fields should be properly quoted for the shell.
+    - **Environment Setup:** Ensure the ArangoDB connection environment variables are set correctly before running the command.
+    - **Initialization:** The database, collection, and search view (`lessons_view`) should be initialized using `scripts/init_arangodb_lessons.py` if not already present.
+- **Running Commands with Temporary Environment Variables:** When a task requires running a command with a specific environment variable set *only* for that command's execution (e.g., setting `MCP_TEST_BASE_URL` for pytest), **do not** rely on the simple `VAR=value command args...` syntax, as agent command tools may misinterpret it. **Instead, explicitly use the `env` command:**
     ```sh
     env VAR_NAME="var_value" command arg1 arg2...
     ```
@@ -92,49 +91,62 @@ reuse_policy:
 # ====================================
 - **Mandatory Post-Edit Standalone Module Verification:** For all Code-specific roles (Coders, Refactorer): **Immediately after successfully applying edits** to a primary script file (e.g., using `apply_diff`, `write_to_file`), and **before** proceeding to any other testing (like integration tests, Docker builds) or reporting completion, you **MUST** execute the modified script's `if __name__ == '__main__':` block using `uv run <filename.py>`. This standalone execution must pass without errors and verify the script's core functionality as intended by the `__main__` block (required by module structure rules). If this check fails, you must attempt to fix the code (following path. Pay close attention to SQL quoting for text fields).*
 
-- **Lesson Updating Rule (Restricted Use):** **Generally, avoid updating existing lessons unless correcting a factual error or significantly clarifying a solution.** If instructed (e.g., by Planner or during Debugging with human confirmation) to update a specific lesson:
-    a. **Identify the `id`** of the lesson to update (use a `SELECT id, problem, solution FROM lessons_learned WHERE ...` query first).
-    b. Construct standard error handling procedures and the proactive fixing principle) before proceeding. Only after this standalone check *succeeds* should you consider the edit successful and move to subsequent steps or report completion.
+- **Lesson Updating Rule (Restricted Use):** **Updating lessons via the CLI is not currently supported.** Updates must be done directly in ArangoDB if necessary, or by adding a new, corrected lesson. If instructed (e.g., by Planner or during Debugging with human confirmation) to update a specific lesson:
+    a. **Identify the `_key` or `_id`** of the lesson document to update (e.g., using `lessons-cli find` or the ArangoDB web UI).
+    b. Perform the update manually or using appropriate ArangoDB tools/APIs.
+- **Mandatory Post-Edit Standalone Module Verification:** For all Code-specific roles (Coders, Refactorer): **Immediately after successfully applying edits** to a primary script file (e.g., using `apply_diff`, `write_to_file`), and **before** proceeding to any other testing (like integration tests, Docker builds) or reporting completion, you **MUST** execute the modified script's `if __name__ == '__main__':` block using `uv run <filename.py>`. This standalone execution must pass without errors and verify the script's core functionality as intended by the `__main__` block (required by module structure rules). If this check fails, you must attempt to fix the code (following standard error handling procedures and the proactive fixing principle) before proceeding. Only after this standalone check *succeeds* should you consider the edit successful and move to subsequent steps or report completion.
 - **New Pre-Code Validation**:
   1. Run `dependency_analyzer --file=proposal.py`
   2. Verify against `approved_packages.list`
   3. If new packages found:
- an SQL `UPDATE` statement targeting that specific `id`.
-    c. Use `SET column_name = 'new_value'` clauses for the specific columns to change. **Properly escape single quotes ('') in new text values.**
-    d. Execute using `sqlite3` via the `command` tool.
-    - **     - Submit `security_review_request.json`
+ an ArangoDB update operation (e.g., using AQL `UPDATE` or `REPLACE`).
+    c. Use appropriate syntax for the update method chosen.
+    d. Execute using ArangoDB tools (like `arangosh`) or the `python-arango` library if scripting the update.
+    - **Example AQL Update (Conceptual - adapt key/values):**
+      ```aql
+      UPDATE "lesson_key_here" WITH { problem: "Updated problem description." } IN lessons_learned
+      ```
+- **New Pre-Code Validation**:
+  1. Run `dependency_analyzer --file=proposal.py`
+  2. Verify against `approved_packages.list`
+  3. If new packages found:
+     - Submit `security_review_request.json`
      - Await Architect approval
-- **Mandatory Server Readiness Verification:** For **any** agent role: **Immediately after successfully executing a command** intended to start a background web server (e.g., `uvicorn`,Example SQL Update (via sqlite3 CLI - Update problem and tags for lesson ID 5):**
+- **Mandatory Server Readiness Verification:** For **any** agent role: **Immediately after successfully executing a command** intended to start a background web server (e.g., `uvicorn`, `gunicorn`, potentially `docker compose up -d` if testing relies on immediate API availability), and **before** proceeding with any task that relies on that server being responsive (e.g., running API tests, sending requests):
+    a. **Identify Target Endpoint:** Determine the base URL (e.g., `http://localhost:8005`) and a simple, reliable health-check or documentation endpoint (preferred: `/health`, fallback: `/docs` or `/openapi.json`).
+    b. **Perform HTTP Polling:** Use available tools (`requests` via Python script/tool, `curl` via `command`, etc.) to repeatedly send a GET request to the target endpoint.
+    c. **Polling Parameters:** Poll every **2 seconds** for a maximum of **30 seconds** (adjust timeouts as needed).
+    d. **Success Condition:** Proceed **only** when a successful HTTP response (typically status code 200 OK) is received from the target endpoint.
+    e. **Failure Condition:** If a successful response is not received within the timeout, the server is considered not ready. The agent **MUST** treat this as a failure of the server startup step.
+    f. **Error Handling:** Handle potential connection errors during polling gracefully (e.g., log them but continue polling until timeout).
+    g. **Logging:** Log the start of polling, each attempt (or status changes), and the final success or timeout result.
+
+# ==============================================
+# Standard Procedures (Consolidated from Modes)
+# ==============================================
+- **Error/Ambiguity Handling - Step 1 (Search Lessons Learned):**
+    - **Action:** When encountering errors or ambiguity, **always query** the `lessons_learned` collection in the application's ArangoDB database first, unless explicitly instructed otherwise.
+    - **Tool:** Use the `command` tool with the `lessons-cli find` script.
+    - **Database Connection:** Ensure ArangoDB environment variables (`ARANGO_HOST`, etc.) are set.
+    - **Goal:** Find relevant past solutions or insights.
+    - **Querying:**
+        - Use `--keyword` for searching text fields (problem, solution, context, example).
+        - Use `--tag` for filtering by exact tags.
+        - Combine keywords and tags as needed.
+        - Use `--limit` to control the number of results.
+    - **Example CLI Search:** To find the 5 most recent lessons tagged with 'docker' OR containing 'timeout' in text fields:
         ```sh
-        # --- Example values (handle quoting carefully `gunicorn`, potentially `docker compose up -d` if testing relies on immediate API availability), and **before) ---
-        NEW_PROBLEM='Updated description, it''s actually simpler.' #** proceeding with any task that relies on that server being responsive (e.g Escaped quote
-        NEW_TAGS='["sqlite", "json", "search", "sql", "update"]' # New JSON array string
-        LESS., running API tests, sending requests):
-    a. **Identify Target Endpoint:** Determine the base URLON_ID=5
-
-        sqlite3 /app/downloads/project_state.db \
-        "UPDATE lessons_learned SET problem = '${NEW_PROBLEM}', tags = '${NEW_TAGS}' (e.g., `http://localhost:8005`) and a simple, reliable health WHERE id = ${LESSON_ID};"
+        # Command to execute (ensure env vars are set):
+        uv run python src/mcp_doc_retriever/lessons_cli.py find --keyword timeout --tag docker --limit 5
         ```
-        *(Adapt-check or documentation endpoint (preferred: `/health`, fallback: `/docs` or `/openapi.json`).
- columns, values, and ID. Ensure proper quoting/escaping).*
+        *(Adapt keywords, tags, and limit as needed. Ensure correct shell quoting if keywords/tags contain spaces or special characters).*
+    - **Outcome:** Analyze the query results. If a relevant lesson is found, apply its solution. If no relevant lesson is found, proceed to the next error handling step.
 
-- **Lesson De    b. **Perform HTTP Polling:** Use available tools (`requests` via Python script/tool, `curl` via `command`, etc.) to repeatedly sendletion Rule (Highly Restricted Use):** **Do not delete lessons unless explicitly instructed by Planner a GET request to the target endpoint.
-    c. **Polling Parameters:** Poll every **2 seconds** or during Debugging with human confirmation.** Deletion removes potentially valuable history.
-    a. **Identify the `id`** of the lesson to delete (use a `SELECT id for a maximum of **30 seconds** (adjust timeouts as needed).
-, problem FROM lessons_learned WHERE ...` query first and be absolutely certain).
-    b. Construct    d. **Success Condition:** Proceed **only** when a successful HTTP response (typically status code 200 OK) is received from the target endpoint an SQL `DELETE` statement targeting that specific `id`.
-    c. Execute using `sqlite3` via the `command` tool.
-    -.
-    e. **Failure Condition:** If a successful response is not received **Example SQL Delete (via sqlite3 CLI - Delete lesson ID 12):**
-        ```sh
-        LESSON_ID=12
+- **Error/Ambiguity Handling - Step 2 (Code Context):** If searching lessons learned yields no solution, consult relevant documentation for tasks involving code understanding, implementation, or refactoring. This includes:
+   a. **Downloaded Documentation:** Check content within the relevant download directory (typically under `/app/downloads/content/` inside the container) if documentation was retrieved using the `doc_download` tool. Use `read_file` or the `doc_search` tool as appropriate.
+   b. **Project Documentation:** Check any supplementary documentation stored within the project repository (e.g., in `repo_docs/`).
 
-         within the timeout, the server is considered not ready. The agent **MUST** treat this as asqlite3 /app/downloads/project_state.db \
-        "DELETE FROM lessons_learned WHERE id = ${LESSON_ID};"
-        ```
-
- failure of the server startup step.
-    f. **Error Handling:** Handle potential connection# Enforcement Examples
+# Enforcement Examples
 # ... (remains the same) ...
 Package installation guardrail
 ```
@@ -171,47 +183,28 @@ roo search-alternative --package=<pkg>;
   - This ensures failures are observable, diagnosable,
         - Use SQL `SELECT` statements. Always select the `id` column along with other relevant columns (`role`, `problem`, `solution`, `tags`, and fixable.
 ```
+# ... (remains the same) ...
+Package installation guardrail
+```
+uv install <pkg> || {
+echo "Failed package install - checking alternatives";
+roo search-alternative --package=<pkg>;
+}
+```
 
-**Key Changes and Clarifications in `.roorules`:**
+Consequences for Violations
+# ... (remains the same) ...
+- **First offense**: Auto-revert via `git checkout -- <file>`
+- **Repeat offenses**: 24hr code submission lock
+- **Critical violations**: Trigger architectural review
 
-1. `context`, `example`) in case you need to refer back to or update the  **Database Path:** Consistently uses `/app/downloads/project_state.db`. lesson later.
-        - Use `WHERE` clauses to filter:
-            - For keywords in text fields: Use `LIKE '%keyword%'` on `problem`, `solution`, `context
-2.  **Tool:** Explicitly states to use `sqlite3` via the `command` tool`, or `example` columns. Combine multiple keywords using `AND` or `OR`.
-3.  **Table/Columns:** Clearly identifies the `lessons_learned` table and its relevant columns.
-4.  **Search (`SELECT`) Instructions:**
-    *   Expl as needed within the `WHERE` clause. Example: `WHERE (problem LIKE '%timeoutains filtering by keywords (`LIKE`), tags (`LIKE` on JSON string), and role%') OR (solution LIKE '%asyncio%')`.
-            - For tags: Search the `tags` column (which stores a JSON string array) using `LIKE (`=`).
-    *   Recommends selecting `id` for potential '%"tag_name"%'`. Example: `WHERE tags LIKE '%"docker"%' AND tags LIKE '%"testing"%'`.
-        - Order results, usually by most recent first: `ORDER BY timestamp DESC`.
-        - Limit the number of results updates/deletes.
-    *   Provides a clear example combining keyword and tag search.
-5.  **Add (`INSERT`) Instructions:**
-    *   : `LIMIT 5` (or a reasonable number).
-    - **Example SQL Search (via `sqlite3` CLI):** To find the 5 most recent lessons tagged with 'docker' OR containing 'timeout' in the problem description:Lists columns to insert.
-    *   Specifies using `datetime('now', 'utc')
-        ```sh
-        # Command to execute:
-        sqlite3 /app/downloads` for timestamp.
-    *   Specifies providing `tags` as a JSON/project_state.db "SELECT id, role, problem, solution, tags FROM array string (using `json_array()` if available, otherwise constructing the string).
-    *    lessons_learned WHERE (tags LIKE '%\"docker\"%') OR (problem LIKE**Crucially highlights the need to escape single quotes (`'`) within text fields '%timeout%') ORDER BY timestamp DESC LIMIT 5;"
-        ```
-        *( (`problem`, `solution`, `context`, `example`) by doubling them (`''Adapt keywords, tags, selected columns, and limit as needed. Ensure correct SQL quoting,`) for SQL compatibility.**
-    *   Provides an example showing shell variable usage especially double quotes around tags inside the `LIKE` pattern).*
-    - **Outcome:** Analyze the query results. If a relevant lesson is found, apply its solution. If no and basic escaping (more complex escaping might require scripting).
-6.  **Update relevant lesson is found, proceed to the next error handling step.
-
-- **Error/Ambiguity Handling - Step 2 (Code Context):** If searching lessons learned yields no solution, consult (`UPDATE`) Instructions:**
-    *   Emphasizes restricted use (corre relevant documentation for tasks involving code understanding, implementation, or refactoring. This includes:ctions only).
-    *   Requires identifying the `id` first.
-    *   
-   a. **Downloaded Documentation:** Check content within the relevant download directory (Specifies using `SET column = 'value'` clauses.
-    *   Retypically under `/app/downloads/content/` inside the container) if documentation was retrieved usingiterates the need to escape single quotes in new values.
-    *   Provides a clear example.
-7.  **Delete (`DELETE`) Instructions:**
-    *   Emphasizes *highly* restricted use.
-    *   Requires identifying the `id` first the `doc_download` tool. Use `read_file` or the `doc_search` tool as appropriate.
-   b. **Project Documentation:** Check any supplementary documentation stored within the project repository (e.g., in `repo_docs/`).
- with certainty.
-    *   Provides a clear example.
+# Async Recursive Workflows Debugging
+# ... (remains the same) ...
+- When building or debugging **async recursive workflows** (e.g., downloaders, crawlers):
+  - **Always add deep contextual logging** at every step of the recursion, including URL processing, network calls, and error handling.
+  - **Propagate error messages and tracebacks** explicitly from inner functions to the orchestration layer.
+  - **Never rely solely on inner function error handling**; the orchestration must capture and log all exceptions.
+  - If silent failures persist, **refactor the orchestration layer** to expose root causes before patching inner functions.
+  - This ensures failures are observable, diagnosable, and fixable.
+```
 
