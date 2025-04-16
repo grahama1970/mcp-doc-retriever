@@ -6,7 +6,7 @@ import litellm
 from loguru import logger
 
 # Import config variables needed
-from .config import EMBEDDING_MODEL, EMBEDDING_DIMENSIONS
+from mcp_doc_retriever.arangodb.config import EMBEDDING_MODEL, EMBEDDING_DIMENSIONS
 
 
 @logger.catch(onerror=lambda _: sys.exit("Exiting due to critical embedding error."))

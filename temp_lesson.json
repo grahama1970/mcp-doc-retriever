@@ -1,7 +1,7 @@
 {
-    "problem": "Cannot connect to database from container",
-    "solution": "Check firewall rules and container network settings. Ensure DB allows connections from container IP range.",
-    "tags": ["database", "network", "docker", "firewall"],
-    "severity": "HIGH",
-    "role": "DevOps"
+    "problem": "Application deployed in container experiences intermittent timeouts or crashes when connecting to external API under moderate load.",
+    "solution": "Investigate and adjust container resource limits (CPU, Memory). Default limits might be too low, causing the process to be throttled or OOMKilled (Out Of Memory Killed) during peak usage, disrupting connections. Monitor container resource usage.",
+    "tags": ["container", "api", "performance", "resource limits", "kubernetes", "docker", "monitoring", "OOMKilled"],
+    "severity": "MEDIUM",
+    "role": "Platform Engineer"
 }

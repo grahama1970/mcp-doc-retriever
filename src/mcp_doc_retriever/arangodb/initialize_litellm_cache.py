@@ -18,7 +18,7 @@ def initialize_litellm_cache() -> None:
         redis_client = redis.Redis(
             host=redis_host,
             port=redis_port,
-            password=redis_password,
+            # password=redis_password, # Don't need
             socket_timeout=2,
             decode_responses=True,
         )

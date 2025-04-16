@@ -123,6 +123,7 @@ import typer
 import json
 import sys
 import os
+from pathlib import Path
 from loguru import logger
 from rich.console import Console
 from rich.table import Table
@@ -471,7 +472,7 @@ def cli_add_lesson(
         "-d",
         help="(Alternative) Lesson data as JSON string. Use with caution due to shell escaping.",
     ),
-    data_file: Optional[typer.Path] = typer.Option(  # Added data_file
+    data_file: Optional[Path] = typer.Option(  # <--- Changed from typer.Path to Path
         None,
         "--data-file",
         "-f",
@@ -639,7 +640,7 @@ def cli_update_lesson(
         "-d",
         help="(Alternative) Fields to update as JSON string. Use with caution.",
     ),
-    data_file: Optional[typer.Path] = typer.Option(  # Added data_file
+    data_file: Optional[Path] = typer.Option(  # <--- Changed from typer.Path to Path
         None,
         "--data-file",
         "-f",
