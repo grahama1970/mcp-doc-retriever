@@ -1,0 +1,33 @@
+# docker-compose.yml
+services:
+  arangodb:
+    image: arangodb:3.12.4 # Use a specific recent version
+    container_name: arangodb_lessons_learned
+    ports:
+      - "8529:8529" # Expose the default ArangoDB HTTP port
+    environment:
+      # WARNING: Default password set here. Change for production or use secrets.
+      ARANGO_ROOT_PASSWORD: "openSesame" # Matches the default in config.py if .env isn't set
+    volumes:
+      - arangodb_data:/var/lib/arangodb3 # Persist data
+      - arangodb_apps_data:/var/lib/arangodb3-apps # Persist apps data
+    restart: unless-stopped
+
+  # Optional: Add Redis for caching if desired
+  redis:
+    image: redis:7-alpine
+    container_name: redis_lessons_learned
+    ports:
+      - "6379:6379"
+    # Add command or password if needed:
+    # command: redis-server --requirepass yourpassword
+    # environment:
+    #   REDIS_PASSWORD: yourpassword
+    volumes:
+      - redis_data:/data
+    restart: unless-stopped
+
+volumes:
+  arangodb_data:
+  arangodb_apps_data:
+  redis_data:

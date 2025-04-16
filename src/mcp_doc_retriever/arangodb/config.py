@@ -1,8 +1,37 @@
-# config.py
+# src/mcp_doc_retriever/arangodb/config.py
+"""
+Configuration Module for ArangoDB and Related Services.
+
+Description:
+This module centralizes configuration settings for connecting to ArangoDB,
+defining collection/view names, specifying embedding models, and configuring
+the ArangoSearch view definition. It loads sensitive information like passwords
+and API keys from environment variables (optionally loaded from a .env file).
+
+Third-Party Package Documentation:
+- python-dotenv: https://github.com/theskumar/python-dotenv
+
+Sample Input:
+Environment variables (e.g., in .env file or exported):
+ARANGO_HOST="http://localhost:8529"
+ARANGO_USER="root"
+ARANGO_PASSWORD="yourpassword"
+ARANGO_DB="doc_retriever"
+EMBEDDING_MODEL="text-embedding-3-small"
+OPENAI_API_KEY="sk-..."
+
+Expected Output (when imported):
+Configuration variables are available for use by other modules.
+e.g.,
+from mcp_doc_retriever.arangodb.config import ARANGO_HOST
+print(ARANGO_HOST)
+"""
 import os
 from dotenv import load_dotenv
 from typing import List, Dict, Any
 
+# Load environment variables from .env file if it exists
+# This allows for easy local development configuration
 load_dotenv()
 
 # --- ArangoDB Configuration ---
@@ -10,12 +39,19 @@ ARANGO_HOST: str = os.environ.get("ARANGO_HOST", "http://localhost:8529")
 ARANGO_USER: str = os.environ.get("ARANGO_USER", "root")
 ARANGO_PASSWORD: str = os.environ.get("ARANGO_PASSWORD", "openSesame")
 ARANGO_DB_NAME: str = os.environ.get("ARANGO_DB", "doc_retriever")
-COLLECTION_NAME: str = "lessons_learned"  # Vertex collection
-VIEW_NAME: str = "lessons_view"
-# --- NEW: Graph Configuration ---
-# Assumes a graph exists containing COLLECTION_NAME as vertices and some edge collections.
-# The graph itself needs to be created separately if it doesn't exist.
+# --- Collection Configuration ---
+COLLECTION_NAME: str = "lessons_learned"  # Vertex collection for lessons
+EDGE_COLLECTION_NAME: str = os.environ.get("ARANGO_EDGE_COLLECTION", "lesson_relationships")  # Edge collection for relationships
+VIEW_NAME: str = "lessons_view"  # Search view for vertices
+
+# --- Graph Configuration ---
 GRAPH_NAME: str = os.environ.get("ARANGO_GRAPH", "lessons_graph")
+
+# --- Relationship Types ---
+RELATIONSHIP_TYPE_RELATED = "RELATED"      # General relationship between lessons
+RELATIONSHIP_TYPE_DEPENDS = "DEPENDS_ON"   # One lesson depends on another
+RELATIONSHIP_TYPE_CAUSES = "CAUSES"        # One lesson's problem causes another
+RELATIONSHIP_TYPE_FIXES = "FIXES"          # One lesson's solution fixes another's problem
 
 # --- Embedding Configuration ---
 EMBEDDING_MODEL: str = os.environ.get("EMBEDDING_MODEL", "text-embedding-3-small")
@@ -61,3 +97,6 @@ VIEW_DEFINITION: Dict[str, Any] = {
     "commitIntervalMsec": 1000,
     "consolidationIntervalMsec": 10000,
 }
+
+# --- Standalone Execution Block Removed ---
+# Verification should be done via dedicated tests or main_usage.py

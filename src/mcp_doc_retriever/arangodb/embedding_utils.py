@@ -30,7 +30,7 @@ def get_embedding(text: str, model: str = EMBEDDING_MODEL) -> Optional[List[floa
         logger.debug(f"Requesting embedding: model='{model}', text='{text[:100]}...'")
         response = litellm.embedding(model=model, input=text)
         # Access the embedding vector from the response structure
-        embedding = response.data[0].embedding
+        embedding = response.data[0]['embedding']
 
         # Optional: Validate embedding dimension if needed for consistency
         if EMBEDDING_DIMENSIONS > 0 and len(embedding) != EMBEDDING_DIMENSIONS:

@@ -7,7 +7,8 @@ from arango.database import StandardDatabase
 from arango.exceptions import AQLQueryExecuteError, ArangoServerError
 
 # Import config variables and embedding utils
-from .config import (
+# --- Configuration and Imports ---
+from mcp_doc_retriever.arangodb.config import (
     SEARCH_FIELDS,
     ALL_DATA_FIELDS_PREVIEW,
     TEXT_ANALYZER,
@@ -15,7 +16,7 @@ from .config import (
     VIEW_NAME,
     GRAPH_NAME
 )
-from .embedding_utils import get_embedding
+from mcp_doc_retriever.arangodb.embedding_utils import get_embedding
 
 # --- Input Validation ---
 
@@ -23,39 +24,61 @@ from .embedding_utils import get_embedding
 def validate_search_params(
     search_text: Optional[str],
     bm25_threshold: Optional[float],
-    top_n: int,
-    offset: int,  # Offset primarily applies to BM25 direct calls
+    top_n: Optional[int],  # Can be None for graph traversal
+    offset: Optional[int],  # Can be None for graph traversal
     tags: Optional[List[str]] = None,
     similarity_threshold: Optional[float] = None,
-    # Add params relevant to hybrid if needed (e.g., initial_k)
     initial_k: Optional[int] = None,
+    # Graph traversal params
+    min_depth: Optional[int] = None,
+    max_depth: Optional[int] = None,
+    direction: Optional[str] = None,
+    limit: Optional[int] = None,
 ) -> None:
     """Validates common search parameters before executing a query."""
     logger.debug("Validating search parameters...")
-    if top_n < 1:
-        raise ValueError(f"Top N limit must be at least 1, got {top_n}")
-    # Offset validation only relevant if offset is used directly
-    if offset < 0:
-        raise ValueError(f"Offset cannot be negative, got {offset}")
+    
+    # Determine operation type
+    is_bm25_or_hybrid = bm25_threshold is not None or initial_k is not None
+    is_graph_traversal = min_depth is not None or max_depth is not None or direction is not None
+    is_standard_search = not is_graph_traversal
+
+    # Validate standard search parameters
+    if is_standard_search:
+        if top_n is not None and top_n < 1:
+            raise ValueError(f"Top N limit must be at least 1, got {top_n}")
+        if offset is not None and offset < 0:
+            raise ValueError(f"Offset cannot be negative, got {offset}")
+        if similarity_threshold is not None and not 0.0 <= similarity_threshold <= 1.0:
+            raise ValueError(
+                f"Similarity threshold must be between 0.0 and 1.0, got {similarity_threshold}"
+            )
+        if bm25_threshold is not None and not 0.0 <= bm25_threshold <= 100.0:
+            raise ValueError(f"BM25 threshold must be >= 0.0, got {bm25_threshold}")
+        if initial_k is not None and initial_k < 1:
+            raise ValueError(
+                f"Initial K for hybrid search must be at least 1, got {initial_k}"
+            )
+        # Check search text for BM25/Hybrid
+        if is_bm25_or_hybrid and (search_text is None or not search_text.strip()):
+            raise ValueError("Search text cannot be empty for BM25 or Hybrid search.")
+
+    # Validate graph traversal parameters
+    if is_graph_traversal:
+        if min_depth is not None and min_depth < 0:
+            raise ValueError(f"Minimum depth cannot be negative, got {min_depth}")
+        if max_depth is not None and max_depth < min_depth:
+            raise ValueError(f"Maximum depth must be >= minimum depth, got max_depth={max_depth}, min_depth={min_depth}")
+        if direction is not None and direction.upper() not in ["OUTBOUND", "INBOUND", "ANY"]:
+            raise ValueError(f"Direction must be one of: OUTBOUND, INBOUND, ANY, got {direction}")
+        if limit is not None and limit < 1:
+            raise ValueError(f"Limit must be at least 1, got {limit}")
+
+    # Common validations for all operations
     if tags and not isinstance(tags, list):
         raise ValueError(f"Tags must be a list of strings, got {type(tags)}")
     if tags and not all(isinstance(tag, str) and tag.strip() for tag in tags):
         raise ValueError("All tags must be non-empty strings")
-    if similarity_threshold is not None and not 0.0 <= similarity_threshold <= 1.0:
-        raise ValueError(
-            f"Similarity threshold must be between 0.0 and 1.0, got {similarity_threshold}"
-        )
-    if bm25_threshold is not None and not 0.0 <= bm25_threshold <= 100.0:
-        raise ValueError(f"BM25 threshold must be >= 0.0, got {bm25_threshold}")
-    if initial_k is not None and initial_k < 1:
-        raise ValueError(
-            f"Initial K for hybrid search must be at least 1, got {initial_k}"
-        )
-
-    # Check if search_text is provided when required (e.g., for BM25 or Hybrid)
-    is_bm25_or_hybrid = bm25_threshold is not None or initial_k is not None
-    if is_bm25_or_hybrid and (search_text is None or not search_text.strip()):
-        raise ValueError("Search text cannot be empty for BM25 or Hybrid search.")
 
     logger.debug("Search parameters validated successfully.")
 
@@ -164,7 +187,7 @@ def search_semantic(
     db: StandardDatabase,
     query_embedding: List[float],  # Expect pre-computed embedding
     top_n: int = 5,
-    similarity_threshold: float = 0.75,
+    similarity_threshold: float = 0.5,  # Lower threshold to catch more semantic matches
     tags: Optional[List[str]] = None,
 ) -> Dict[str, Any]:
     """
@@ -201,30 +224,36 @@ def search_semantic(
             tag_filter_clause = f"FILTER {tag_conditions}"
             bind_vars.update({f"tag_{i}": tag for i, tag in enumerate(tags)})
 
-        # AQL fetches top N based purely on similarity score
+        # Simpler AQL query that directly gets top N results
         aql = f"""
-        LET matching_docs = (
+        LET embedding_results = (
             FOR doc IN {VIEW_NAME}
                 FILTER doc.embedding != null
                 {tag_filter_clause}
-                LET score = COSINE_SIMILARITY(doc.embedding, @query_embedding)
-                FILTER score >= @similarity_threshold
-                // Keep score and doc for sorting
-                RETURN {{ doc: doc, score: score }}
-        )
-        LET total_count = LENGTH(matching_docs) // Get total count matching threshold
-
-        LET paged_results = (
-            FOR item IN matching_docs
-                SORT item.score DESC
-                LIMIT @top_n // Apply limit for top N results
+                LET similarity = COSINE_SIMILARITY(doc.embedding, @query_embedding)
+                FILTER similarity >= @similarity_threshold
+                SORT similarity DESC
+                LIMIT @top_n
                 RETURN {{
-                    // Use KEEP for final output format consistency
-                    doc: KEEP(item.doc, '_key', '_id', {", ".join([f'"{f}"' for f in ALL_DATA_FIELDS_PREVIEW])}),
-                    similarity_score: item.score
+                    doc: KEEP(doc, '_key', '_id', {", ".join([f'"{f}"' for f in ALL_DATA_FIELDS_PREVIEW])}),
+                    similarity_score: similarity
                 }}
         )
-        RETURN {{ results: paged_results, total: total_count }}
+
+        LET total = (
+            FOR doc IN {VIEW_NAME}
+                FILTER doc.embedding != null
+                {tag_filter_clause}
+                LET similarity = COSINE_SIMILARITY(doc.embedding, @query_embedding)
+                FILTER similarity >= @similarity_threshold
+                COLLECT WITH COUNT INTO total
+                RETURN total
+        )
+
+        RETURN {{
+            results: embedding_results,
+            total: total[0]
+        }}
         """
         logger.debug(f"Semantic AQL (ID: {search_uuid}):\n{aql}")
         try:
@@ -436,6 +465,162 @@ def hybrid_search(
 # These encapsulate the AQL needed to get raw candidates (doc + score)
 
 
+# --- Standalone Verification Block ---
+if __name__ == "__main__":
+    import sys
+    import os
+    from loguru import logger
+
+    # Ensure src directory is in path for imports
+    sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '../../..')))
+
+    # Configure logging
+    logger.remove()
+    logger.add(sys.stderr, level="DEBUG", format="{time:YYYY-MM-DD HH:mm:ss} | {level: <7} | {name}:{function}:{line} | {message}")
+    logger.info("--- Running search_api.py Standalone Verification ---")
+
+    # Imports needed for setup
+    try:
+        from mcp_doc_retriever.arangodb.arango_setup import connect_arango, ensure_database
+        from mcp_doc_retriever.arangodb.crud_api import add_lesson, get_lesson, delete_lesson
+        # Import local functions as they're defined in this file
+        from mcp_doc_retriever.arangodb.search_api import (
+            get_embedding,
+            search_bm25,
+            search_semantic,
+            hybrid_search,
+            graph_traverse,
+        )
+        logger.debug("Using absolute imports for setup and CRUD functions.")
+    except ImportError as e:
+        logger.error(f"Import failed. Ensure PYTHONPATH includes project root. Error: {e}")
+        sys.exit(1)
+
+    # Test data: Create a small set of documents with varied content for search testing
+    TEST_DOCS = [
+        {
+            "problem": "Docker container fails to start with network error.",
+            "solution": "Check if the port is already in use or if docker network exists.",
+            "tags": ["docker", "network", "containers"],
+            "role": "DevOps",
+            "severity": "HIGH",
+            "context": "During deployment of microservices"
+        },
+        {
+            "problem": "Python package import fails in container.",
+            "solution": "Ensure requirements.txt is up to date and packages are installed.",
+            "tags": ["python", "docker", "dependencies"],
+            "role": "Developer",
+            "severity": "MEDIUM",
+            "context": "Development environment setup"
+        },
+        {
+            "problem": "Database connection timeout in production.",
+            "solution": "Increase connection timeout and implement retry logic.",
+            "tags": ["database", "production", "timeout"],
+            "role": "DBA",
+            "severity": "HIGH",
+            "context": "High load scenario"
+        }
+    ]
+
+    test_keys = []  # Store keys for cleanup
+    db = None  # Initialize db to None for finally block safety
+    tests_passed = 0
+    total_tests = 4  # BM25, Semantic, Hybrid, Graph (if implemented)
+
+    try:
+        # 1. Connect and get DB
+        logger.info("Connecting to ArangoDB...")
+        client = connect_arango()
+        logger.info("Ensuring database exists...")
+        db = ensure_database(client)
+        logger.info(f"Using database: {db.name}")
+
+        # 2. Add test documents
+        logger.info("Adding test documents...")
+        for doc in TEST_DOCS:
+            # Prepare document with all fields for embedding generation
+            test_doc = doc.copy()
+            # Get embedding based on concatenated relevant fields
+            embedding_text = f"{doc['problem']}\n{doc['solution']}\n{doc['context']}"
+            embedding = get_embedding(embedding_text)
+            if embedding:
+                test_doc['embedding'] = embedding
+                add_meta = add_lesson(db, test_doc)
+            else:
+                logger.error("Failed to generate embedding for test document")
+                continue
+            if add_meta and "_key" in add_meta:
+                test_keys.append(add_meta["_key"])
+                logger.success(f"Added test document with key: {add_meta['_key']}")
+            else:
+                logger.error("Failed to add test document. Skipping further tests.")
+                sys.exit(1)
+
+        # 3. Test BM25 Search
+        logger.info("\nTest 1/4 (BM25) - Searching for 'docker container'...")
+        bm25_results = search_bm25(db, "docker container", top_n=2)
+        if bm25_results and len(bm25_results["results"]) > 0:
+            logger.success(f"✅ Test 1/4 (BM25) - Found {len(bm25_results['results'])} results")
+            tests_passed += 1
+        else:
+            logger.error("❌ Test 1/4 (BM25) - No results found")
+
+        # 4. Test Semantic Search
+        logger.info("\nTest 2/4 (Semantic) - Using text 'container networking issues'...")
+        query_text = "container networking issues"
+        query_embedding = get_embedding(query_text)
+        if query_embedding:
+            semantic_results = search_semantic(db, query_embedding, top_n=2)
+            if semantic_results and len(semantic_results["results"]) > 0:
+                logger.success(f"✅ Test 2/4 (Semantic) - Found {len(semantic_results['results'])} results")
+                tests_passed += 1
+            else:
+                logger.error("❌ Test 2/4 (Semantic) - No results found")
+        else:
+            logger.error("❌ Test 2/4 (Semantic) - Failed to generate query embedding")
+
+        # 5. Test Hybrid Search
+        logger.info("\nTest 3/4 (Hybrid) - Searching for 'python dependencies'...")
+        hybrid_results = hybrid_search(db, "python dependencies", top_n=2)
+        if hybrid_results and len(hybrid_results["results"]) > 0:
+            logger.success(f"✅ Test 3/4 (Hybrid) - Found {len(hybrid_results['results'])} results")
+            tests_passed += 1
+        else:
+            logger.error("❌ Test 3/4 (Hybrid) - No results found")
+
+        # 6. Test Graph Traversal (if implemented)
+        if test_keys:
+            logger.info(f"\nTest 4/4 (Graph) - Traversing from node {test_keys[0]}...")
+            try:
+                graph_results = graph_traverse(db, f"lessons_learned/{test_keys[0]}", max_depth=1)
+                logger.success(f"✅ Test 4/4 (Graph) - Found {len(graph_results)} connections")
+                tests_passed += 1
+            except Exception as e:
+                logger.error(f"❌ Test 4/4 (Graph) - Traversal failed: {e}")
+
+    except Exception as e:
+        logger.exception(f"An error occurred during standalone verification: {e}")
+
+    finally:
+        # Clean up test documents
+        if db and test_keys:
+            logger.info("\nCleaning up test documents...")
+            for key in test_keys:
+                if delete_lesson(db, key):
+                    logger.success(f"Deleted test document {key}")
+                else:
+                    logger.warning(f"Failed to delete test document {key}")
+
+        # Print final results summary
+        if tests_passed == total_tests:
+            logger.success(f"\n✅ All {total_tests} tests passed successfully!")
+        else:
+            logger.error(f"\n❌ Only {tests_passed}/{total_tests} tests passed.")
+        logger.info("--- search_api.py Standalone Verification Finished ---")
+
+
 def _fetch_bm25_candidates(
     db: StandardDatabase,
     search_text: str,
@@ -568,14 +753,13 @@ def graph_traverse(
         # Validate inputs
         try:
             validate_search_params(
-                search_text=None,
-                bm25_threshold=None,
-                top_n=None,
-                offset=None,
-                tags=None,
-                similarity_threshold=None,
-                initial_k=None,
-                start_node_id=start_node_id,
+                search_text=None,      # Not used in graph traversal
+                bm25_threshold=None,   # Not used in graph traversal
+                top_n=None,           # Not used in graph traversal
+                offset=None,          # Not used in graph traversal
+                tags=None,            # Not used in graph traversal
+                similarity_threshold=None,  # Not used in graph traversal
+                initial_k=None,       # Not used in graph traversal
                 min_depth=min_depth,
                 max_depth=max_depth,
                 direction=direction,

@@ -55,7 +55,7 @@ from loguru import logger
 from dotenv import load_dotenv
 
 # Import setup, search, crud APIs, config, embedding
-from .arango_setup import (
+from mcp_doc_retriever.arangodb.arango_setup import (
     connect_arango,
     ensure_database,
     ensure_collection,
@@ -64,15 +64,16 @@ from .arango_setup import (
 )
 
 # Make sure to fix the caching logic in cache_setup if needed
-from .cache_setup import initialize_litellm_cache
-from .search_api import search_bm25, search_semantic, hybrid_search
-from .crud_api import (
+from mcp_doc_retriever.arangodb.initialize_litellm_cache import initialize_litellm_cache
+from mcp_doc_retriever.arangodb.search_api import search_bm25, search_semantic, hybrid_search
+from mcp_doc_retriever.arangodb.crud_api import (
     add_lesson,
     get_lesson,
     update_lesson,
     delete_lesson,
-)  # <-- Import CRUD
-from .embedding_utils import get_embedding
+
+)  
+from mcp_doc_retriever.arangodb.embedding_utils import get_embedding
 
 # Load environment variables from .env file if present
 load_dotenv()

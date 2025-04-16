@@ -1,0 +1,7 @@
+{
+    "problem": "Cannot connect to database from container",
+    "solution": "Check firewall rules and container network settings. Ensure DB allows connections from container IP range.",
+    "tags": ["database", "network", "docker", "firewall"],
+    "severity": "HIGH",
+    "role": "DevOps"
+}
