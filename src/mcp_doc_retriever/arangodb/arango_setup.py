@@ -290,7 +290,7 @@ def ensure_search_view(
             )
             try:
                 # Corrected: Use db method to replace properties
-                db.replace_view_properties(view_name, view_properties)
+                db.replace_view(view_name, view_properties)
                 logger.info(
                     f"ArangoSearch View '{view_name}' properties updated/verified."
                 )
@@ -541,7 +541,63 @@ def seed_initial_data(
     )
     return success_count > 0
 
+def seed_test_relationship(db: StandardDatabase) -> bool:
+    """Creates a single test edge relationship between known seed documents."""
+    logger.info("Attempting to seed a test relationship...")
+    try:
+        edge_collection = db.collection(EDGE_COLLECTION_NAME)
+    except Exception as e:
+        logger.error(
+            f"Failed to get edge collection '{EDGE_COLLECTION_NAME}' for seeding relationship. Traceback:",
+            exc_info=True,
+        )
+        return False
 
+    # Define the keys and relationship details
+    from_key = "planner_jq_tags_error_20250412195032"
+    to_key = "planner_human_verification_context_202504141035"
+    from_id = f"{COLLECTION_NAME}/{from_key}"
+    to_id = f"{COLLECTION_NAME}/{to_key}"
+
+    edge_doc = {
+        "_from": from_id,
+        "_to": to_id,
+        "type": "RELATED",  # Example relationship type
+        "rationale": "Example relationship seeded by setup script for testing.",
+        "source": "arango_setup_seed",
+    }
+
+    try:
+        # Check if edge already exists (simple check based on from/to/type)
+        # A more robust check might involve a unique hash or specific key if needed
+        cursor = db.aql.execute(
+            f"FOR e IN {EDGE_COLLECTION_NAME} FILTER e._from == @from AND e._to == @to AND e.type == @type RETURN e._key LIMIT 1",
+            bind_vars={"from": from_id, "to": to_id, "type": edge_doc["type"]},
+        )
+        if cursor.count() > 0:
+            logger.info(
+                f"Test relationship from '{from_key}' to '{to_key}' already exists."
+            )
+            return True
+
+        # Insert the new edge
+        meta = edge_collection.insert(edge_doc)
+        logger.success(
+            f"Successfully seeded test relationship with key '{meta['_key']}' from '{from_key}' to '{to_key}'."
+        )
+        return True
+    except (DocumentInsertError, ArangoServerError) as e:
+        logger.error(
+            f"Failed to insert test relationship from '{from_key}' to '{to_key}'. Does source/target exist? Traceback:",
+            exc_info=True,
+        )
+        return False
+    except Exception as e:
+        logger.error(
+            f"Unexpected error inserting test relationship. Traceback:", exc_info=True
+        )
+        return False
+    
 # --- Modified initialize_database Function ---
 def initialize_database(
     run_setup: bool = True,
@@ -549,7 +605,7 @@ def initialize_database(
     force_truncate: bool = False,
     seed_file_path: Optional[str] = None,
 ) -> Optional[StandardDatabase]:
-    """Main function to connect, optionally truncate, optionally seed from file, and ensure ArangoDB components."""
+    """Main function to connect, optionally truncate, optionally seed, and ensure ArangoDB components."""
     client = connect_arango()
     if not client:
         return None
@@ -557,52 +613,52 @@ def initialize_database(
     if not db:
         return None
 
-    if truncate:
+    if truncate:  # Truncation logic
         logger.warning("--- TRUNCATE REQUESTED ---")
         collections_to_clear = [COLLECTION_NAME, EDGE_COLLECTION_NAME]
         if not truncate_collections(db, collections_to_clear, force=force_truncate):
-            logger.error("Truncation failed or was cancelled. Aborting setup.")
+            logger.error("Truncation failed/cancelled. Aborting.")
             return None
         logger.info("--- Truncation complete ---")
 
     logger.info("Ensuring base collections exist...")
     collection_obj = ensure_collection(db, COLLECTION_NAME)
     edge_collection_obj = ensure_edge_collection(db, EDGE_COLLECTION_NAME)
+    # Corrected check based on previous debug
     if collection_obj is None or edge_collection_obj is None:
         logger.error("Failed to ensure base collections exist. Aborting.")
         return None
 
-    # Seeding Logic using load_json_file
+    # Seeding Logic
+    seeding_occurred = False  # Flag to track if seeding happened
     if seed_file_path:
         logger.info(f"--- SEED DATA REQUESTED from file: {seed_file_path} ---")
         try:
-            seed_data = load_json_file(seed_file_path)  # Uses your function
+            seed_data = load_json_file(seed_file_path)
             if seed_data is None:
-                logger.error(
-                    f"Seeding aborted because file could not be loaded or was empty: {seed_file_path}"
-                )
+                logger.error(f"Seeding aborted: file empty/not found: {seed_file_path}")
                 return None
             lessons_list = seed_data.get("lessons")
             if not isinstance(lessons_list, list):
                 logger.error(
-                    f"Seed file JSON structure invalid. Expected {{'lessons': [...]}}. Found type: {type(lessons_list)}"
+                    f"Seed file invalid: needs {{'lessons': [...]}}. Found: {type(lessons_list)}"
                 )
                 return None
-            if not seed_initial_data(db, lessons_list):  # Pass loaded list
-                logger.warning(
-                    "Data seeding process encountered errors or inserted no data."
-                )
+
+            if seed_initial_data(db, lessons_list):
+                logger.info("--- Seeding documents complete ---")
+                seeding_occurred = True  # Mark that seeding happened
+                # --- Seed test relationship ONLY if document seeding occurred ---
+                if not seed_test_relationship(db):
+                    logger.warning("Failed to seed test relationship.")
+                # --- End seed test relationship ---
             else:
-                logger.info("--- Seeding from file complete ---")
-        except (IOError, json.JSONDecodeError) as e:
-            logger.error(
-                f"Failed to load or parse seed file '{seed_file_path}'. See traceback.",
-                exc_info=True,
-            )
-            return None
+                logger.warning(
+                    "Data seeding process inserted no data or encountered errors."
+                )
         except Exception as e:
             logger.error(
-                f"An unexpected error occurred during seeding from file '{seed_file_path}'. See traceback.",
+                f"Error during seeding from file '{seed_file_path}'. Traceback:",
                 exc_info=True,
             )
             return None
@@ -614,11 +670,9 @@ def initialize_database(
         )
         graph_obj = ensure_graph(db)
         view_ok = ensure_search_view(db)
-        index_ok = ensure_vector_index(db)  # Attempt after potential seeding
+        index_ok = ensure_vector_index(db)
         if not all([graph_obj, view_ok, index_ok]):
-            logger.error(
-                "One or more ArangoDB structure setup steps failed (Graph/View/Index). Check logs above."
-            )
+            logger.error("Setup steps failed (Graph/View/Index). Check logs.")
             return None
         else:
             logger.success(

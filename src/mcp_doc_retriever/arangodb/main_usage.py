@@ -44,7 +44,7 @@ Expected Output (Illustrative):
 - Log messages indicating setup progress (Cache, DB, Collection, View).
 - Log messages indicating sample data insertion (if collection was empty).
 - Log messages for BM25 search execution and results (bm25_score).
-- Log messages for Semantic search execution and results (similarity_score).
+ insert_sample_if_empty,- Log messages for Semantic search execution and results (similarity_score).
 - Log messages for Hybrid search execution and results (rrf_score).
 - Success or Error messages at the end.
 """
@@ -59,8 +59,7 @@ from mcp_doc_retriever.arangodb.arango_setup import (
     connect_arango,
     ensure_database,
     ensure_collection,
-    ensure_view,
-    insert_sample_if_empty,
+    ensure_search_view,
 )
 
 # Make sure to fix the caching logic in cache_setup if needed
@@ -121,44 +120,113 @@ def log_search_results(search_data: dict, search_type: str, score_field: str):
 
 
 # --- Main Demo Execution ---
+# In main_usage.py
+
+# ... (Keep imports: sys, os, logger, load_dotenv) ...
+# --- Imports from your project ---
+from mcp_doc_retriever.arangodb.arango_setup import (
+    connect_arango,
+    ensure_database,
+    ensure_collection,
+    ensure_search_view,
+    # REMOVED insert_sample_if_empty import
+)
+from mcp_doc_retriever.arangodb.initialize_litellm_cache import initialize_litellm_cache
+from mcp_doc_retriever.arangodb.search_api import (
+    search_bm25,
+    search_semantic,
+    hybrid_search,
+)
+from mcp_doc_retriever.arangodb.crud_api import (
+    add_lesson,
+    get_lesson,
+    update_lesson,
+    delete_lesson,
+)
+from mcp_doc_retriever.arangodb.embedding_utils import get_embedding
+# --- End Imports ---
+
+# ... (Keep load_dotenv(), logger configuration, log_search_results function) ...
+
+
+# --- Main Demo Execution (Complete Function) ---
 def run_demo():
     """Executes the main demonstration workflow including CRUD examples."""
     logger.info("=" * 20 + " Starting ArangoDB Programmatic Demo " + "=" * 20)
+    logger.info("Assumes DB structures (Collections, View, Index) exist.")
+    logger.info("Run 'arango_setup.py --seed-file ...' first if data is required.")
 
     # --- Prerequisites & Initialization ---
-    required_key = "OPENAI_API_KEY"
+    required_key = "OPENAI_API_KEY"  # Assuming OpenAI for embeddings via LiteLLM
     if required_key not in os.environ:
-        logger.error(f"Required env var {required_key} not set.")
-        sys.exit(1)
+        logger.error(
+            f"Required env var {required_key} not set for embedding generation."
+        )
+        # Decide if the demo can proceed without embeddings or should exit
+        # sys.exit(1) # Uncomment to make API key strictly required
 
     logger.info("--- Initializing LiteLLM Caching ---")
-    initialize_litellm_cache()
+    initialize_litellm_cache()  # Handles Redis or in-memory fallback
     logger.info("--- Caching Initialized ---")
 
     try:
-        # --- ArangoDB Setup ---
-        logger.info("--- Running ArangoDB Setup Phase ---")
+        # --- ArangoDB Setup Verification Phase ---
+        logger.info("--- Verifying ArangoDB Setup Phase ---")
         client = connect_arango()
+        if not client:
+            # connect_arango logs the specific error
+            raise ConnectionError("Failed to connect to ArangoDB instance.")
+
         db = ensure_database(client)
+        if not db:
+            # ensure_database logs the specific error
+            raise ConnectionError("Failed to connect to or ensure target database.")
+
+        # Ensure collection exists (needed for CRUD/Search)
         collection = ensure_collection(db)
-        ensure_view(db)
-        insert_sample_if_empty(collection)
-        logger.info("--- ArangoDB Setup Complete ---")
+        if not collection:
+            # ensure_collection logs the specific error
+            raise ConnectionError("Failed to ensure document collection exists.")
+        else:
+            logger.info(f"Verified document collection '{collection.name}' exists.")
+
+        # Ensure search view exists (needed for BM25/Hybrid)
+        if not ensure_search_view(db):
+            # ensure_search_view logs the specific error
+            logger.warning(
+                "Failed to ensure search view exists or update properties. Keyword/Hybrid search might fail."
+            )
+            # Decide if this is critical - maybe proceed but log warning
+        else:
+            logger.info(
+                f"Verified ArangoSearch view '{os.getenv('ARANGO_SEARCH_VIEW_NAME', 'lessons_view')}' exists/updated."
+            )
+
+        # NOTE: We don't call ensure_vector_index or ensure_graph here, as main_usage
+        # primarily focuses on CRUD and search API usage, assuming setup is complete.
+        # The search functions themselves rely on the index/graph existing.
+
+        # REMOVED: insert_sample_if_empty(collection) call
+
+        logger.info("--- ArangoDB Setup Verification Complete (Structures assumed) ---")
 
         # --- CRUD Examples ---
         logger.info("--- Running CRUD Examples ---")
         new_lesson_data = {
-            "problem": "Docker build fails due to rate limits on base image pull.",
-            "solution": "Use a caching proxy like Nexus or Harbor, or authenticate pulls.",
-            "tags": ["docker", "ci", "rate-limit", "registry", "nexus"],
-            "severity": "MEDIUM",
-            "role": "DevOps Engineer",
+            "problem": "Docker build fails frequently due to upstream network timeouts during package downloads.",
+            "solution": "Implement retries with backoff in Dockerfile RUN commands. Consider using a local package mirror or caching layer.",
+            "tags": ["docker", "build", "network", "timeout", "retry", "cache"],
+            "severity": "HIGH",
+            "role": "Build Engineer",
+            "context": "Observed during automated CI builds.",
             # Timestamp and _key will be added by add_lesson if needed
         }
         # Add
-        added_meta = add_lesson(db, new_lesson_data)
+        added_meta = add_lesson(
+            db, new_lesson_data
+        )  # This now generates embedding internally
         new_key = None
-        if added_meta:
+        if added_meta and isinstance(added_meta, dict):
             new_key = added_meta.get("_key")
             logger.info(f"CRUD Add: Success, new key = {new_key}")
         else:
@@ -167,37 +235,61 @@ def run_demo():
         # Get (if add succeeded)
         if new_key:
             retrieved_doc = get_lesson(db, new_key)
-            if retrieved_doc:
+            if retrieved_doc and isinstance(retrieved_doc, dict):
                 logger.info(
-                    f"CRUD Get: Success, retrieved problem: {retrieved_doc.get('problem')}"
+                    f"CRUD Get: Success, retrieved problem: '{retrieved_doc.get('problem', 'N/A')[:60]}...'"
                 )
+                # Check if embedding was added
+                if "embedding" in retrieved_doc and isinstance(
+                    retrieved_doc["embedding"], list
+                ):
+                    logger.info(
+                        f"CRUD Get Verify: Embedding field found (dim={len(retrieved_doc['embedding'])})."
+                    )
+                else:
+                    logger.warning(
+                        "CRUD Get Verify: Embedding field missing or invalid after add_lesson."
+                    )
             else:
                 logger.error(f"CRUD Get: Failed to retrieve {new_key}")
 
         # Update (if add succeeded)
         if new_key:
             update_payload = {
-                "severity": "HIGH",
-                "tags": ["docker", "ci", "rate-limit", "auth"],
+                "severity": "CRITICAL",  # Update severity
+                "solution": "Implement retries with exponential backoff in Dockerfile RUN commands. Set up and use a local package mirror (e.g., Artifactory, Nexus).",  # Refine solution
+                "tags": [
+                    "docker",
+                    "build",
+                    "network",
+                    "timeout",
+                    "retry",
+                    "mirror",
+                    "artifactory",
+                ],  # Update tags
             }
-            updated_meta = update_lesson(db, new_key, update_payload)
-            if updated_meta:
+            updated_meta = update_lesson(
+                db, new_key, update_payload
+            )  # This should re-generate embedding if relevant fields change
+            if updated_meta and isinstance(updated_meta, dict):
                 logger.info(
                     f"CRUD Update: Success, new rev = {updated_meta.get('_rev')}"
                 )
                 # Verify update
                 updated_doc = get_lesson(db, new_key)
-                if updated_doc:
+                if updated_doc and isinstance(updated_doc, dict):
                     logger.info(
                         f"CRUD Update Verify: Severity = {updated_doc.get('severity')}, Tags = {updated_doc.get('tags')}"
                     )
+                    # Optionally re-check embedding if update should have triggered regeneration
             else:
                 logger.error(f"CRUD Update: Failed for {new_key}")
 
         # Delete (if add succeeded)
         if new_key:
+            # Assuming delete_lesson takes db and key (add delete_edges=True if needed)
             deleted = delete_lesson(db, new_key)
-            if deleted:
+            if deleted:  # Assuming it returns True/False or similar
                 logger.info(f"CRUD Delete: Success for {new_key}")
                 # Verify delete
                 deleted_doc = get_lesson(db, new_key)
@@ -205,42 +297,71 @@ def run_demo():
                     logger.info(
                         f"CRUD Delete Verify: Document {new_key} confirmed deleted."
                     )
+                else:
+                    logger.error(
+                        f"CRUD Delete Verify: Document {new_key} still found after delete attempt."
+                    )
             else:
                 logger.error(f"CRUD Delete: Failed for {new_key}")
 
         logger.info("--- CRUD Examples Complete ---")
 
-        # --- Search Phase (Keep examples) ---
+        # --- Search Phase ---
+        # Assumes data exists from previous seeding or manual insertion
         logger.info("--- Running Search Examples ---")
+        logger.info("Note: Search results depend on data previously seeded or added.")
 
         # Example 1: BM25 Search
         print("\n" + "-" * 10 + " BM25 Search Example " + "-" * 10)
-        bm25_query = "CI pipeline download problem"
-        bm25_results = search_bm25(db, bm25_query, 0.05, 3, 0, ["ci"])
-        log_search_results(bm25_results, "BM25", "bm25_score")
+        bm25_query = "shell script json comment issue"
+        # Example: Search with a filter tag
+        bm25_results = search_bm25(
+            db, bm25_query, threshold=0.01, limit=3, offset=0, filter_tags=["shell"]
+        )
+        log_search_results(bm25_results, "BM25 (tag='shell')", "bm25_score")
 
         # Example 2: Semantic Search
         print("\n" + "-" * 10 + " Semantic Search Example " + "-" * 10)
-        semantic_query = "How to fix unreliable continuous integration downloads?"
-        semantic_query_embedding = get_embedding(semantic_query)
+        semantic_query = "how to make command line tools handle arguments correctly"
+        semantic_query_embedding = get_embedding(
+            semantic_query
+        )  # Requires API key if not cached
         if semantic_query_embedding:
-            semantic_results = search_semantic(db, semantic_query_embedding, 3, 0.75)
+            semantic_results = search_semantic(
+                db, semantic_query_embedding, limit=3, similarity_threshold=0.75
+            )
             log_search_results(semantic_results, "Semantic", "similarity_score")
         else:
-            logger.error("Skipping semantic search example.")
+            logger.error(
+                "Failed to get embedding for semantic search query. Skipping example."
+            )
 
         # Example 3: Hybrid Search (RRF)
         print("\n" + "-" * 10 + " Hybrid Search Example (RRF) " + "-" * 10)
-        hybrid_query = "Fixing flaky CI downloads"
-        hybrid_results = hybrid_search(db, hybrid_query, 5, 15, 0.01, 0.70)
+        hybrid_query = "debugging tests involving python and shell"
+        # Using default thresholds, adjusting top_n and initial_k
+        hybrid_results = hybrid_search(
+            db, hybrid_query, top_n=5, initial_k=20
+        )  # Uses default thresholds from search_api
         log_search_results(hybrid_results, "Hybrid (RRF)", "rrf_score")
 
         logger.success("\n" + "=" * 20 + " Demo Finished Successfully " + "=" * 20)
 
+    except ConnectionError as ce:
+        # Log connection errors specifically if raised by setup checks
+        logger.error(f"Demo aborted due to connection/setup issue: {ce}")
+        sys.exit(1)
     except Exception as e:
+        # Catch any other unexpected errors during CRUD or Search
         logger.exception(f"Demo failed due to an unexpected error: {e}")
         sys.exit(1)
 
 
 if __name__ == "__main__":
+    logger.info(
+        "Running main_usage.py demo. Assumes database structure and seed data (if needed) already exist."
+    )
+    logger.info(
+        "Run 'python -m src.mcp_doc_retriever.arangodb.arango_setup --seed-file ...' first if data is required."
+    )
     run_demo()
