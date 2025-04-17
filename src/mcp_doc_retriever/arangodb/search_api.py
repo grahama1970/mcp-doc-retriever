@@ -482,7 +482,7 @@ if __name__ == "__main__":
     # Imports needed for setup
     try:
         from mcp_doc_retriever.arangodb.arango_setup import connect_arango, ensure_database
-        from mcp_doc_retriever.arangodb.crud_api import add_lesson, get_lesson, delete_lesson
+        from mcp_doc_retriever.arangodb.crud_api_original import add_lesson, get_lesson, delete_lesson
         # Import local functions as they're defined in this file
         from mcp_doc_retriever.arangodb.search_api import (
             get_embedding,

@@ -128,6 +128,7 @@ from loguru import logger
 from rich.console import Console
 from rich.table import Table
 from rich.json import JSON
+from typing import List, Optional, Any, Dict
 from typing import List, Optional
 
 # --- Local Imports ---
@@ -147,13 +148,23 @@ try:
     )
 
     # Import specific CRUD functions needed
-    from mcp_doc_retriever.arangodb.crud_api import (
+    from mcp_doc_retriever.arangodb.crud_api_original import (
         add_lesson,
         get_lesson,
         update_lesson,
         delete_lesson,
         add_relationship,
         delete_relationship,
+    )
+    from mcp_doc_retriever.arangodb.crud_api_original import ( # Corrected import block
+        add_lesson,
+        get_lesson,
+        update_lesson,
+        delete_lesson,
+        add_relationship,
+        delete_relationship,
+        find_lessons_by_keyword, # Moved here
+        find_lessons_by_tag, # <<< ADD THIS IMPORT
     )
     from mcp_doc_retriever.arangodb.embedding_utils import get_embedding
 
@@ -163,6 +174,7 @@ try:
         GRAPH_NAME,
         COLLECTION_NAME,
         EDGE_COLLECTION_NAME,
+        SEARCH_FIELDS, # Moved here
     )
     from mcp_doc_retriever.arangodb.initialize_litellm_cache import (
         initialize_litellm_cache,
@@ -460,6 +472,151 @@ def cli_search_hybrid(
         console.print(f"[bold red]Error during Hybrid search:[/bold red] {e}")
         raise typer.Exit(code=1)
 
+
+
+@search_app.command("keyword")
+def cli_find_keyword(
+    keywords: List[str] = typer.Argument(..., help="One or more keywords to search for."),
+    search_fields_str: Optional[str] = typer.Option(
+        None,
+        "--search-fields",
+        "-sf",
+        help=f'Comma-separated fields to search (e.g., "problem,solution"). Defaults to configured SEARCH_FIELDS: {SEARCH_FIELDS}',
+    ),
+    limit: int = typer.Option(
+        10, "--limit", "-lim", help="Maximum number of results to return.", min=1
+    ),
+    match_all: bool = typer.Option(
+        False,
+        "--match-all",
+        "-ma",
+        help="Require all keywords to match (AND logic) instead of any (OR logic).",
+    ),
+    json_output: bool = typer.Option(
+        False, "--json-output", "-j", help="Output results as JSON array."
+    ),
+):
+    """
+    Find documents based on exact keyword matching within specified fields.
+
+    *AGENT INSTRUCTIONS:*
+
+    *   **WHEN TO USE:** Use this command when you need to find lessons containing *specific, known keywords* within certain text fields (like 'problem', 'solution', 'context'). This performs an exact text search, unlike BM25 (which uses relevance scoring) or semantic search (which uses meaning).
+    *   **WHY TO USE:** Useful for locating lessons mentioning precise terms, error codes, function names, or specific phrases you are looking for directly.
+    *   **HOW TO USE:** Provide one or more keywords as arguments. Use options to control which fields are searched (`--search-fields`), the maximum number of results (`--limit`), whether all keywords must match (`--match-all`), and the output format (`--json-output`).
+
+    *EXAMPLES:*
+
+    *   Find lessons containing "docker" or "compose" in default fields:
+        `... search keyword docker compose`
+    *   Find lessons containing "timeout" AND "database" in 'problem' or 'solution' fields, limit 5:
+        `... search keyword timeout database --search-fields problem,solution --match-all --limit 5`
+    *   Find lessons with "arangodb" and output as JSON:
+        `... search keyword arangodb -j`
+    """
+    logger.info(f"CLI: Performing Keyword search for: {keywords}")
+    db = get_db_connection()
+
+    parsed_search_fields: Optional[List[str]] = None
+    if search_fields_str:
+        parsed_search_fields = [f.strip() for f in search_fields_str.split(',') if f.strip()]
+        if not parsed_search_fields:
+            logger.warning("Empty --search-fields provided, defaulting to None (all configured fields).")
+            parsed_search_fields = None # Reset to None if only whitespace/commas were given
+
+    try:
+        results = find_lessons_by_keyword(
+            db,
+            keywords,
+            search_fields=parsed_search_fields, # Pass None or the parsed list
+            limit=limit,
+            match_all=match_all,
+        )
+
+        # Wrap results for consistency with _display_results
+        results_data = {
+            "results": results,
+            "total": len(results), # Keyword search doesn't easily provide total count beyond limit
+            "offset": 0 # Keyword search doesn't support offset directly
+        }
+
+        if json_output:
+            # find_lessons_by_keyword returns list directly
+            print(json.dumps(results, indent=2))
+        else:
+            # Pass None for score_field as keyword search has no score
+            _display_results(results_data, "Keyword", score_field=None) # Type error fixed by signature change below
+
+    except Exception as e:
+        logger.error(f"Keyword search failed: {e}", exc_info=True)
+        console.print(f"[bold red]Error during Keyword search:[/bold red] {e}")
+        raise typer.Exit(code=1)
+
+
+
+@search_app.command("tag")
+def cli_search_tag(
+    tags: List[str] = typer.Argument(..., help="One or more tags to search for (case-sensitive)."),
+    limit: int = typer.Option(
+        10, "--limit", "-lim", help="Maximum number of results to return.", min=1
+    ),
+    match_all: bool = typer.Option(
+        False,
+        "--match-all",
+        "-ma",
+        help="Require all tags to match (AND logic) instead of any (OR logic).",
+    ),
+    json_output: bool = typer.Option(
+        False, "--json-output", "-j", help="Output results as JSON array."
+    ),
+):
+    """
+    Find documents based on exact tag matching within the 'tags' array field.
+
+    *AGENT INSTRUCTIONS:*
+
+    *   **WHEN TO USE:** Use this command to find lessons that have been explicitly tagged with one or more specific keywords. This performs an exact, case-sensitive match against items in the `tags` array.
+    *   **WHY TO USE:** Ideal for filtering lessons based on predefined categories or topics represented by tags.
+    *   **HOW TO USE:** Provide one or more tags as arguments. Use `--match-all` if a lesson must have *all* the specified tags. Use `--limit` to control the number of results and `--json-output` for machine-readable output.
+
+    *EXAMPLES:*
+
+    *   Find lessons tagged with "database" OR "python":
+        `... search tag database python`
+    *   Find lessons tagged with "testing" AND "docker", limit 5:
+        `... search tag testing docker --match-all --limit 5`
+    *   Find lessons tagged "cli" and output as JSON:
+        `... search tag cli -j`
+    """
+    logger.info(f"CLI: Performing Tag search for: {tags}")
+    db = get_db_connection()
+
+    try:
+        results = find_lessons_by_tag(
+            db,
+            tags_to_search=tags,
+            limit=limit,
+            match_all=match_all,
+        )
+
+        # Wrap results for consistency with _display_results
+        results_data = {
+            "results": results,
+            "total": len(results), # Tag search doesn't easily provide total count beyond limit
+            "offset": 0 # Tag search doesn't support offset directly
+        }
+
+        if json_output:
+            # find_lessons_by_tag returns list directly
+            print(json.dumps(results, indent=2))
+        else:
+            # Pass None for score_field as tag search has no score
+            _display_results(results_data, "Tag", score_field=None)
+
+    except Exception as e:
+        logger.error(f"Tag search failed: {e}", exc_info=True)
+        console.print(f"[bold red]Error during Tag search:[/bold red] {e}")
+        raise typer.Exit(code=1)
 
 # --- Lesson (Vertex) CRUD Commands (under `crud` subcommand) ---
 
@@ -864,7 +1021,7 @@ def cli_add_relationship(
         f"CLI: Received request to add relationship from {from_key} to {to_key}"
     )
     db = get_db_connection()
-    attr_dict: Optional[dict] = None
+    attr_dict: Optional[dict[str, Any]] = None # Added type arguments
     if attributes:
         try:
             attr_dict = json.loads(attributes)
@@ -1097,9 +1254,11 @@ def cli_graph_traverse(
 
 
 # --- Helper for Displaying Search Results (Human Readable) ---
-def _display_results(search_data: dict, search_type: str, score_field: str):
+# Removed duplicate signature, kept the Optional[str] version
+def _display_results(search_data: dict[str, Any], search_type: str, score_field: Optional[str]): # Added type arguments
     """Uses Rich to display search results in a table (for human consumption)."""
-    if not isinstance(search_data, dict):
+    # Note: Pylance might warn about unnecessary isinstance, but it's safer.
+    if not isinstance(search_data, dict): # Added type arguments
         logger.warning(f"_display_results expected a dict, got {type(search_data)}")
         console.print(
             "[yellow]Warning: Invalid format for search results display.[/yellow]"
@@ -1126,7 +1285,8 @@ def _display_results(search_data: dict, search_type: str, score_field: str):
         title=f"{search_type} Search Results",
     )
     table.add_column("#", style="dim", width=3, no_wrap=True, justify="right")
-    table.add_column(f"Score", justify="right", width=8)  # Simplified header
+    # Removed duplicate column add
+    table.add_column(f"Score" if score_field else "-", justify="right", width=8) # No score for keyword header
     table.add_column("Key", style="cyan", no_wrap=True, width=38)
     table.add_column(
         "Problem (Preview)", style="green", overflow="fold", min_width=30
@@ -1135,11 +1295,12 @@ def _display_results(search_data: dict, search_type: str, score_field: str):
 
     for i, result_item in enumerate(results, start=1):
         # Handle potential variations in result structure
-        if not isinstance(result_item, dict):
+        if not isinstance(result_item, dict): # Added type arguments
             logger.warning(f"Skipping non-dict result item: {result_item}")
             continue  # Skip non-dict results
 
-        score = result_item.get(score_field, 0.0)
+        # Removed duplicate score assignment
+        score_val = result_item.get(score_field, 0.0) if score_field else None
         # Accommodate results that might be just the doc or nested under 'doc'
         doc = result_item.get("doc", result_item if "_key" in result_item else {})
         if not doc:  # Handle cases where doc might be missing or empty
@@ -1166,7 +1327,8 @@ def _display_results(search_data: dict, search_type: str, score_field: str):
 
         table.add_row(
             str(offset + i),
-            f"{score:.4f}{other_scores_str}",  # Add other scores here
+            # Removed duplicate score display in row
+            f"{score_val:.4f}{other_scores_str}" if score_val is not None else "-", # Display score or dash
             key,
             problem_preview,  # Use preview
             tags,

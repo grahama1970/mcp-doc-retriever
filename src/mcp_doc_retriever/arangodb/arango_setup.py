@@ -128,36 +128,88 @@ def ensure_database(
         return None
 
 
+# In arango_setup.py
+
+
 def ensure_collection(
     db: StandardDatabase, collection_name: str = COLLECTION_NAME
 ) -> Optional[StandardCollection]:
-    """Ensures the specified document collection exists."""
+    """Ensures the specified document collection exists and is the correct type."""
     try:
-        existing_collections = db.collections()
-        collection_info = next(
-            (c for c in existing_collections if c["name"] == collection_name), None
-        )
-        if collection_info is None:
-            logger.info(f"Collection '{collection_name}' not found. Creating...")
-            collection = db.create_collection(collection_name)
-            logger.success(f"Collection '{collection_name}' created.")
+        collection = None  # Initialize collection handle
+        collection_exists = False
+        collection_is_correct_type = False
+
+        # 1. Check if collection exists and get its properties if it does
+        try:
+            # Use get() which returns the handle or raises CollectionNotFoundError
+            collection = db.collection(collection_name)
+            collection_exists = True
+            props = collection.properties()  # Get properties if it exists
+            collection_type_code = props.get("type", 0)  # 2=Document, 3=Edge
+            collection_type_name = (
+                "Document"
+                if collection_type_code == 2
+                else "Edge"
+                if collection_type_code == 3
+                else "Unknown"
+            )
+            logger.debug(
+                f"Collection '{collection_name}' exists. Type code: {collection_type_code} ({collection_type_name})"
+            )
+            if collection_type_code == 2:  # Check if it's Document type
+                collection_is_correct_type = True
+            else:
+                logger.error(
+                    f"Existing collection '{collection_name}' is NOT a DOCUMENT collection (type={collection_type_name}). Cannot proceed."
+                )
+                raise TypeError(
+                    f"Collection '{collection_name}' must be type DOCUMENT, but found {collection_type_name}."
+                )
+
+        except CollectionNotFoundError:
+            logger.info(f"Collection '{collection_name}' not found.")
+            collection_exists = False
+        except (ArangoServerError, ArangoClientError, TypeError) as e:
+            logger.error(
+                f"Error checking/validating collection '{collection_name}': {e}",
+                exc_info=True,
+            )
+            return None  # Can't proceed if we can't check status/type
+
+        # 2. Create the collection if it doesn't exist
+        if not collection_exists:
+            try:
+                logger.info(
+                    f"Creating collection '{collection_name}' as DOCUMENT type..."
+                )
+                # Explicitly create as a document collection - ONLY IF IT DOESN'T EXIST
+                collection = db.create_collection(collection_name, edge=False)
+                logger.success(f"Collection '{collection_name}' created successfully.")
+                collection_is_correct_type = True  # Newly created is correct type
+            except (CollectionCreateError, ArangoServerError) as create_err:
+                logger.error(
+                    f"Failed to create collection '{collection_name}': {create_err}",
+                    exc_info=True,
+                )
+                return None  # Creation failed
+
+        # 3. Return the handle only if it exists and is the correct type
+        if collection is not None and collection_is_correct_type:
             return collection
         else:
-            logger.debug(f"Collection '{collection_name}' already exists.")
-            return db.collection(collection_name)
-    except (CollectionCreateError, ArangoServerError) as e:
-        logger.error(
-            f"Failed to ensure collection '{collection_name}'. See traceback.",
-            exc_info=True,
-        )
-        return None
-    except Exception as e:
-        logger.error(
-            f"An unexpected error occurred ensuring collection '{collection_name}'. See traceback.",
-            exc_info=True,
-        )
-        return None
+            # This case should ideally be caught by exceptions above, but as a safeguard:
+            logger.error(
+                f"Failed to obtain a valid handle for DOCUMENT collection '{collection_name}'."
+            )
+            return None
 
+    except Exception as e:  # Catch any unexpected errors in the overall logic
+        logger.error(
+            f"An unexpected error occurred in ensure_collection for '{collection_name}'.",
+            exc_info=True,
+        )
+        return None
 
 def ensure_edge_collection(
     db: StandardDatabase, edge_collection_name: str = EDGE_COLLECTION_NAME
