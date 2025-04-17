@@ -28,6 +28,7 @@ dependencies = [
     "litellm>=1.66.1",
     "redis>=5.2.1",
     "json-repair>=0.41.1",
+    "rapidfuzz>=3.13.0",
 ]
     
 

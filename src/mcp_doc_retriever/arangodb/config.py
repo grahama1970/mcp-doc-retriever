@@ -58,7 +58,13 @@ EMBEDDING_MODEL: str = os.environ.get("EMBEDDING_MODEL", "text-embedding-3-small
 EMBEDDING_DIMENSIONS: int = 1536
 
 # --- Constants for Fields & Analyzers ---
-SEARCH_FIELDS: List[str] = ["problem", "solution", "context", "example"]
+SEARCH_FIELDS: List[str] = [
+    "_key",
+    "problem", 
+    "solution", 
+    "context", 
+    "example"
+]
 STORED_VALUE_FIELDS: List[str] = ["timestamp", "severity", "role", "task", "phase"]
 ALL_DATA_FIELDS_PREVIEW: List[str] = STORED_VALUE_FIELDS + SEARCH_FIELDS + ["tags"]
 TEXT_ANALYZER: str = "text_en"

@@ -64,8 +64,8 @@ from mcp_doc_retriever.arangodb.arango_setup import (
 
 # Make sure to fix the caching logic in cache_setup if needed
 from mcp_doc_retriever.arangodb.initialize_litellm_cache import initialize_litellm_cache
-from mcp_doc_retriever.arangodb.search_api import search_bm25, search_semantic, hybrid_search
-from mcp_doc_retriever.arangodb.crud_api_original import (
+from mcp_doc_retriever.arangodb.search_advanced import search_bm25, search_semantic, hybrid_search
+from mcp_doc_retriever.arangodb._archive.crud_api_original import (
     add_lesson,
     get_lesson,
     update_lesson,
@@ -132,12 +132,12 @@ from mcp_doc_retriever.arangodb.arango_setup import (
     # REMOVED insert_sample_if_empty import
 )
 from mcp_doc_retriever.arangodb.initialize_litellm_cache import initialize_litellm_cache
-from mcp_doc_retriever.arangodb.search_api import (
+from mcp_doc_retriever.arangodb.search_advanced import (
     search_bm25,
     search_semantic,
     hybrid_search,
 )
-from mcp_doc_retriever.arangodb.crud_api_original import (
+from mcp_doc_retriever.arangodb._archive.crud_api_original import (
     add_lesson,
     get_lesson,
     update_lesson,

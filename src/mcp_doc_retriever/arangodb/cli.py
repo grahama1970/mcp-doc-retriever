@@ -140,7 +140,7 @@ try:
         ensure_edge_collection,  # Added for graph setup check
         ensure_graph,  # Added for graph setup check
     )
-    from mcp_doc_retriever.arangodb.search_api import (
+    from mcp_doc_retriever.arangodb.search_advanced import (
         search_bm25,
         search_semantic,
         hybrid_search,
@@ -148,7 +148,7 @@ try:
     )
 
     # Import specific CRUD functions needed
-    from mcp_doc_retriever.arangodb.crud_api_original import (
+    from mcp_doc_retriever.arangodb._archive.crud_api_original import (
         add_lesson,
         get_lesson,
         update_lesson,
@@ -156,7 +156,7 @@ try:
         add_relationship,
         delete_relationship,
     )
-    from mcp_doc_retriever.arangodb.crud_api_original import ( # Corrected import block
+    from mcp_doc_retriever.arangodb._archive.crud_api_original import ( # Corrected import block
         add_lesson,
         get_lesson,
         update_lesson,
