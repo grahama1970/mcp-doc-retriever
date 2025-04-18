@@ -202,6 +202,8 @@ def delete_relationship(db: StandardDatabase, edge_key: str) -> bool:
                 f"Unexpected error deleting relationship edge (key: {edge_key}): {e}"
             )
             return False
+
+
 # Ensure vector index  helper code
 def ensure_vector_index(
     db: StandardDatabase,
@@ -311,6 +313,8 @@ def ensure_vector_index(
             exc_info=True,
         )
         return False
+    
+    
 # Embed text code
 def get_embedding(text: str) -> List[float]:
     """

@@ -146,7 +146,12 @@ def search_bm25(
 
         try:
             cursor = db.aql.execute(aql, bind_vars=bind_vars)
+            # AQL returns one document containing results/total; use next() to get it.
+            # Pylance might struggle with Cursor type hints, but this is functionally correct.
             data = cursor.next()
+            # Note: If the query *could* return zero documents, error handling would be needed here.
+            # However, this specific AQL structure always returns one document.
+
             results_list = data.get("results", [])
             total = data.get("total", 0)
             logger.success(
@@ -155,8 +160,8 @@ def search_bm25(
             return {
                 "results": results_list,
                 "total": total,
-                "offset": data.get("offset", offset),
-                "limit": data.get("limit", top_n),
+                "offset": data.get("offset", offset), # Already safely gets offset
+                "limit": data.get("limit", top_n),   # Already safely gets limit
             }
         except AQLQueryExecuteError as e:
             logger.error(
@@ -201,10 +206,9 @@ if __name__ == "__main__":
         from mcp_doc_retriever.arangodb.arango_setup import (
             connect_arango,
             ensure_database,
-            ensure_collection,  # To create the test collection
+            # ensure_collection, # Using local helper instead
             ensure_search_view,  # To create the test view
-            # delete_collection_safely,  # Helper for cleanup
-            # delete_view_safely,  # Helper for cleanup
+            # Removed commented out safe delete imports
         )
         # Use a simple CRUD for testing - direct insert/delete is often easiest
         # If crud_lessons exists and is simple:
@@ -215,6 +219,52 @@ if __name__ == "__main__":
             "Please ensure the script is run from the project root or the necessary paths are in PYTHONPATH."
         )
         sys.exit(1)
+
+    # Add imports needed by the local helper function
+    from arango.collection import StandardCollection
+    from arango.exceptions import (
+        CollectionCreateError,
+        ArangoServerError, # Already imported globally, but good practice here too
+        ArangoClientError
+    )
+
+    # --- Local Helper for Test (using db.collections() and next()) ---
+    def _ensure_test_collection(db: StandardDatabase, name: str) -> Optional[StandardCollection]:
+        """Simplified local version for standalone test, checks existence via db.collections()."""
+        try:
+            # Check if collection exists by trying to find it in the list
+            existing_collections = db.collections()
+
+            # Add check to ensure existing_collections is a list before iterating
+            if not isinstance(existing_collections, list):
+                 _logger.error(f"db.collections() did not return a list for '{name}'. Type: {type(existing_collections)}")
+                 return None
+
+            found_collection_info = next((c for c in existing_collections if c['name'] == name), None)
+            if found_collection_info is not None:
+                _logger.debug(f"Test collection '{name}' already exists.")
+                return db.collection(name) # Return existing collection object
+            else:
+                # Collection does not exist, create it
+                _logger.info(f"Creating test collection '{name}'...")
+                try:
+                    # Create the collection
+                    db.create_collection(name, edge=False)
+                    _logger.success(f"Test collection '{name}' created.")
+                    # Explicitly get and return the collection object after creation
+                    return db.collection(name)
+                except (CollectionCreateError, ArangoServerError) as create_err:
+                    _logger.error(f"Failed to create test collection '{name}': {create_err}", exc_info=True)
+                    return None
+        except (ArangoServerError, ArangoClientError) as check_err:
+             _logger.error(f"Error listing/getting collections while checking for '{name}': {check_err}", exc_info=True)
+             return None
+        except Exception as e:
+             _logger.error(f"Unexpected error ensuring test collection '{name}': {e}", exc_info=True)
+             return None
+
+    # Note: We will still use ensure_search_view from arango_setup as it seems to work.
+
 
     # --- Logger Configuration for Test Output ---
     _logger.remove()
@@ -243,26 +293,13 @@ if __name__ == "__main__":
         if not db:
             sys.exit(1)  # ensure_database logs errors
 
-        # 2. Create Test Collection
-        # _logger.info(f"Creating test collection: {test_coll_name}")
-        
-        # logger.info(f"Creating test collection: {test_coll_name}")
-        #_logger.debug(f"→ ensure_collection(db, '{test_coll_name}')")
-        # test_collection = ensure_collection(db, test_coll_name)
-        
-        # if not test_collection:
-        #     raise RuntimeError("Failed to create test collection")
-        
-        try:
-            test_collection = db.create_collection(test_coll_name, edge=False)
-            _logger.success(f"Created test collection: {test_coll_name}")
-        except ArangoServerError as e:
-            # 1203 = not found / no permission, etc.
-            _logger.warning(f"Could not create collection (maybe it exists?): {e}")
-            test_collection = db.collection(test_coll_name)
-                
-                
-        
+        # 2. Create Test Collection using LOCAL helper
+        _logger.info(f"Ensuring test collection exists (using local helper): {test_coll_name}")
+        test_collection = _ensure_test_collection(db, test_coll_name) # Use local helper
+        if test_collection:
+             _logger.error(f"Failed to create or access test collection '{test_coll_name}'")
+             raise RuntimeError("Failed to ensure test collection exists")
+
         # 3. Create Test ArangoSearch View for BM25
         _logger.info(f"Creating test view: {test_view_name}")
         # Ensure the view is configured correctly for BM25 on SEARCH_FIELDS
@@ -324,7 +361,13 @@ if __name__ == "__main__":
         for doc in TEST_DOCS:
             try:
                 meta = coll.insert(doc, overwrite=True)
-                inserted_keys.append(meta["_key"])
+                # Add check: insert usually returns dict, but be defensive
+                if isinstance(meta, dict) and "_key" in meta:
+                    inserted_keys.append(meta["_key"])
+                else:
+                    _logger.warning(f"Insert for key {doc.get('_key')} did not return expected metadata: {meta}")
+                    # Decide if this is critical - maybe raise error or just skip append?
+                    # For now, just log and continue.
             except Exception as e_ins:
                 _logger.error(f"Failed to insert test doc {doc.get('_key')}: {e_ins}")
                 raise RuntimeError("Test data insertion failed.") from e_ins
@@ -440,28 +483,22 @@ if __name__ == "__main__":
         # --- Cleanup ---
         _logger.info("--- Cleaning up test resources ---")
         if db:
-            # Use safe delete functions if they exist, otherwise direct delete
-            if "delete_view_safely" in locals():
-                delete_view_safely(db, test_view_name)
-            else:
-                try:
-                    db.delete_view(test_view_name)
-                    _logger.info(f"Dropped test view: {test_view_name}")
-                except Exception as e_del_v:
-                    _logger.warning(
-                        f"Could not drop test view {test_view_name}: {e_del_v}"
-                    )
+            # Direct delete with try/except (safe functions were not used)
+            try:
+                db.delete_view(test_view_name)
+                _logger.info(f"Dropped test view: {test_view_name}")
+            except Exception as e_del_v:
+                _logger.warning(
+                    f"Could not drop test view {test_view_name}: {e_del_v}"
+                )
 
-            if "delete_collection_safely" in locals():
-                delete_collection_safely(db, test_coll_name)
-            else:
-                try:
-                    db.delete_collection(test_coll_name)
-                    _logger.info(f"Dropped test collection: {test_coll_name}")
-                except Exception as e_del_c:
-                    _logger.warning(
-                        f"Could not drop test collection {test_coll_name}: {e_del_c}"
-                    )
+            try:
+                db.delete_collection(test_coll_name)
+                _logger.info(f"Dropped test collection: {test_coll_name}")
+            except Exception as e_del_c:
+                _logger.warning(
+                    f"Could not drop test collection {test_coll_name}: {e_del_c}"
+                )
         else:
             _logger.warning("DB connection not established, skipping cleanup.")
 
@@ -472,3 +509,4 @@ if __name__ == "__main__":
         else:
             _logger.error("❌ BM25 Standalone Test FAILED")
             sys.exit(1)
+

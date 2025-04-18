@@ -30,6 +30,11 @@ from arango.exceptions import (
 )
 from loguru import logger
 
+# --- Initialize LiteLLM Cache Import ---
+# Note: Moved initialization logic out of setup_arango_collection
+# It should be called once, e.g., when the application/script starts.
+from mcp_doc_retriever.arangodb.initialize_litellm_cache import initialize_litellm_cache
+
 # --- Local Imports ---
 try:
     from mcp_doc_retriever.arangodb.embedding_utils import (
@@ -46,12 +51,15 @@ except ImportError as e:
 
     # Define dummy functions if needed for script execution without imports
     def get_text_for_embedding(doc_data: Dict[str, Any]) -> str:
+        logger.warning("Using dummy get_text_for_embedding")
         return ""
 
     def get_embedding(text: str, model: str = "") -> Optional[List[float]]:
+        logger.warning("Using dummy get_embedding")
         return None
 
     def load_json_file(file_path: str) -> Optional[Union[dict, list]]:
+        logger.warning("Using dummy load_json_file")
         return None  # Added Union type hint
 
 
@@ -84,19 +92,20 @@ def connect_arango() -> Optional[ArangoClient]:
     logger.info(f"Attempting to connect to ArangoDB at {ARANGO_HOST}...")
     try:
         client = ArangoClient(hosts=ARANGO_HOST)
+        # Verify connection by trying to access _system db
         sys_db = client.db("_system", username=ARANGO_USER, password=ARANGO_PASSWORD)
-        _ = sys_db.collections()  # Verify connection
+        _ = sys_db.collections()  # Simple operation to check connectivity
         logger.success("Successfully connected to ArangoDB instance.")
         return client
     except (ArangoClientError, ArangoServerError) as e:
         logger.error(
-            f"Failed to connect to ArangoDB at {ARANGO_HOST}. See traceback.",
-            exc_info=True,
+            f"Failed to connect to ArangoDB at {ARANGO_HOST}. Error: {e}",
+            exc_info=True, # Include traceback for connection errors
         )
         return None
     except Exception as e:
         logger.error(
-            f"An unexpected error occurred during connection attempt. See traceback.",
+            f"An unexpected error occurred during ArangoDB connection attempt: {e}",
             exc_info=True,
         )
         return None
@@ -114,120 +123,96 @@ def ensure_database(
             logger.success(f"Database '{db_name}' created successfully.")
         else:
             logger.debug(f"Database '{db_name}' already exists.")
+        # Return the handle to the specific database
         return client.db(db_name, username=ARANGO_USER, password=ARANGO_PASSWORD)
     except (DatabaseCreateError, ArangoServerError, ArangoClientError) as e:
         logger.error(
-            f"Failed to ensure database '{db_name}'. See traceback.", exc_info=True
+            f"Failed to ensure database '{db_name}'. Error: {e}", exc_info=True
         )
         return None
     except Exception as e:
         logger.error(
-            f"An unexpected error occurred ensuring database '{db_name}'. See traceback.",
+            f"An unexpected error occurred ensuring database '{db_name}'. Error: {e}",
             exc_info=True,
         )
         return None
-
-
-# In arango_setup.py
 
 
 def ensure_collection(
     db: StandardDatabase,
     collection_name: str = COLLECTION_NAME,
-) -> StandardCollection:
+) -> Optional[StandardCollection]:
     """
     Ensures the specified DOCUMENT collection exists in ArangoDB.
-    - If it already exists and is type DOCUMENT, returns it.
-    - If it does not exist (catches error_code 1203), creates it.
-    - Raises on any other errors (permissions, network, bad type).
+    Returns the collection object or None on failure.
     """
-    # 1) Existence & type check
     try:
-        coll = db.collection(collection_name)
-        props = coll.properties()  # will throw ArangoServerError(1203) if missing
-        if props.get("type") != 2:
-            bad = "Edge" if props.get("type") == 3 else "Unknown"
-            raise TypeError(
-                f"Collection '{collection_name}' exists but is {bad}, not DOCUMENT."
-            )
-        logger.debug(f"Collection '{collection_name}' exists and is DOCUMENT.")
-        return coll
-
-    except ArangoServerError as e:
-        code = getattr(e, "error_code", None)
-        # 1203 = "collection or view not found"
-        if code == 1203 or "1203" in str(e):
-            logger.info(f"Collection '{collection_name}' not found. Will create it.")
+        if collection_name not in [c["name"] for c in db.collections()]:
+             logger.info(f"Collection '{collection_name}' not found. Creating as DOCUMENT type...")
+             collection = db.create_collection(collection_name, edge=False)
+             logger.success(f"Collection '{collection_name}' created successfully.")
+             return collection
         else:
-            logger.error(
-                f"Server error checking collection '{collection_name}': {e}",
-                exc_info=True,
-            )
-            raise
-
-    except ArangoClientError as e:
+             collection = db.collection(collection_name)
+             props = collection.properties()
+             if props.get("type") == 2: # 2 for document, 3 for edge
+                  logger.debug(f"Collection '{collection_name}' exists and is DOCUMENT type.")
+                  return collection
+             else:
+                  coll_type = "Edge" if props.get("type") == 3 else "Unknown"
+                  logger.error(
+                      f"Collection '{collection_name}' exists but is type '{coll_type}', not DOCUMENT."
+                  )
+                  return None # Return None for incorrect type
+    except (CollectionCreateError, ArangoServerError, ArangoClientError) as e:
         logger.error(
-            f"Client error checking collection '{collection_name}': {e}", exc_info=True
+            f"Failed to ensure collection '{collection_name}'. Error: {e}", exc_info=True
         )
-        raise
+        return None # Return None on error
+    except Exception as e:
+         logger.error(
+             f"An unexpected error occurred ensuring collection '{collection_name}'. Error: {e}",
+             exc_info=True
+         )
+         return None
 
-    # 2) Creation
-    try:
-        logger.info(f"Creating collection '{collection_name}' as DOCUMENT type...")
-        coll = db.create_collection(collection_name, edge=False)
-        logger.success(f"Collection '{collection_name}' created successfully.")
-        return coll
-
-    except (CollectionCreateError, ArangoServerError) as e:
-        logger.error(
-            f"Failed to create collection '{collection_name}': {e}", exc_info=True
-        )
-        raise
 
 def ensure_edge_collection(
     db: StandardDatabase, edge_collection_name: str = EDGE_COLLECTION_NAME
 ) -> Optional[StandardCollection]:
-    """Ensures the specified edge collection exists."""
+    """Ensures the specified EDGE collection exists."""
     try:
-        existing_collections = db.collections()
-        collection_info = next(
-            (c for c in existing_collections if c["name"] == edge_collection_name), None
-        )
-        if collection_info is None:
+        if edge_collection_name not in [c["name"] for c in db.collections()]:
             logger.info(
-                f"Edge collection '{edge_collection_name}' not found. Creating..."
+                f"Edge collection '{edge_collection_name}' not found. Creating as EDGE type..."
             )
-            edge_collection = db.create_collection(
-                edge_collection_name, edge=True
-            )  # edge=True is key
+            edge_collection = db.create_collection(edge_collection_name, edge=True) # edge=True is key
             logger.success(f"Edge collection '{edge_collection_name}' created.")
             return edge_collection
         else:
-            # Corrected check: Compare type string
-            collection_type = collection_info.get("type")
-            logger.debug(
-                f"Checking existing collection '{edge_collection_name}'. Reported type: '{collection_type}'"
-            )
-            if collection_type != "edge":  # Check the string type
-                logger.error(
-                    "Existing collection '{}' is not an edge collection (type={}). Please check configuration.",
-                    edge_collection_name,
-                    collection_type,
-                )
-                return None
-            logger.debug(
-                f"Edge collection '{edge_collection_name}' confirmed as type 'edge'."
-            )
-            return db.collection(edge_collection_name)
-    except (CollectionCreateError, ArangoServerError) as e:
+            collection = db.collection(edge_collection_name)
+            props = collection.properties()
+            # Check 'type' property (3 for edge)
+            if props.get("type") == 3:
+                  logger.debug(
+                      f"Edge collection '{edge_collection_name}' exists and is EDGE type."
+                  )
+                  return collection
+            else:
+                  coll_type = "Document" if props.get("type") == 2 else "Unknown"
+                  logger.error(
+                      f"Collection '{edge_collection_name}' exists but is type '{coll_type}', not EDGE."
+                  )
+                  return None
+    except (CollectionCreateError, ArangoServerError, ArangoClientError) as e:
         logger.error(
-            f"Failed to ensure edge collection '{edge_collection_name}'. See traceback.",
+            f"Failed to ensure edge collection '{edge_collection_name}'. Error: {e}",
             exc_info=True,
         )
         return None
     except Exception as e:
         logger.error(
-            f"An unexpected error occurred ensuring edge collection '{edge_collection_name}'. See traceback.",
+            f"An unexpected error occurred ensuring edge collection '{edge_collection_name}': {e}",
             exc_info=True,
         )
         return None
@@ -241,14 +226,21 @@ def ensure_graph(
 ) -> Optional[Graph]:
     """Ensures the graph defining relationships exists."""
     try:
-        existing_graphs = db.graphs()
-        graph_info = next((g for g in existing_graphs if g["name"] == graph_name), None)
-        if graph_info is None:
+        # Check if vertex and edge collections exist first (optional but good practice)
+        if vertex_collection_name not in [c["name"] for c in db.collections()]:
+            logger.error(f"Cannot ensure graph '{graph_name}': Vertex collection '{vertex_collection_name}' not found.")
+            return None
+        if edge_collection_name not in [c["name"] for c in db.collections()]:
+             logger.error(f"Cannot ensure graph '{graph_name}': Edge collection '{edge_collection_name}' not found.")
+             return None
+
+        if not db.has_graph(graph_name):
             logger.info(f"Graph '{graph_name}' not found. Creating...")
+            # Define the edge relationship within the graph
             edge_definition = {
                 "edge_collection": edge_collection_name,
                 "from_vertex_collections": [vertex_collection_name],
-                "to_vertex_collections": [vertex_collection_name],
+                "to_vertex_collections": [vertex_collection_name], # Assuming self-relationships are possible
             }
             graph = db.create_graph(graph_name, edge_definitions=[edge_definition])
             logger.success(f"Graph '{graph_name}' created.")
@@ -256,14 +248,14 @@ def ensure_graph(
         else:
             logger.debug(f"Graph '{graph_name}' already exists.")
             return db.graph(graph_name)
-    except (GraphCreateError, ArangoServerError) as e:
+    except (GraphCreateError, ArangoServerError, ArangoClientError) as e:
         logger.error(
-            f"Failed to ensure graph '{graph_name}'. See traceback.", exc_info=True
+            f"Failed to ensure graph '{graph_name}'. Error: {e}", exc_info=True
         )
         return None
     except Exception as e:
         logger.error(
-            f"An unexpected error occurred ensuring graph '{graph_name}'. See traceback.",
+            f"An unexpected error occurred ensuring graph '{graph_name}': {e}",
             exc_info=True,
         )
         return None
@@ -274,67 +266,63 @@ def ensure_search_view(
     view_name: str = SEARCH_VIEW_NAME,
     collection_name: str = COLLECTION_NAME,
 ) -> bool:
-    """Ensures an ArangoSearch View exists for keyword searching (BM25)."""
+    """Ensures an ArangoSearch View exists for keyword searching (BM25). Links specified collection."""
+    # Define view properties including necessary fields and analyzers
+    # Adjust fields based on what needs to be text-searchable
     view_properties = {
+        "type": "arangosearch", # Specify type explicitly
         "links": {
             collection_name: {
                 "fields": {
+                    # Use 'text_en' analyzer for general English text fields
                     "problem": {"analyzers": ["text_en"]},
                     "solution": {"analyzers": ["text_en"]},
                     "context": {"analyzers": ["text_en"]},
-                    "tags": {"analyzers": ["identity"]},
-                    # Add other fields like 'lesson', 'role' if needed for keyword search
                     "lesson": {"analyzers": ["text_en"]},
-                    "role": {"analyzers": ["identity"]},  # identity for exact match
+                    # Use 'identity' for exact matching (like tags, IDs, roles)
+                    "tags": {"analyzers": ["identity"]},
+                    "role": {"analyzers": ["identity"]},
+                    # Include 'embedding' field if needed for filtering/access within the view context,
+                    # but primary vector search uses the dedicated vector index.
+                    # If included here, 'identity' might be suitable if not analyzing the vector itself.
+                    # EMBEDDING_FIELD: {"analyzers": ["identity"]} # Optional: include embedding field
                 },
-                "includeAllFields": False,
-                "storeValues": "id",
-                "trackListPositions": False,
-                "analyzers": ["identity", "text_en"],  # List analyzers used in the link
+                "includeAllFields": False, # Only include specified fields
+                "storeValues": "id", # Store only document IDs to save space
+                "trackListPositions": False, # Not usually needed for basic search
+                "analyzers": ["identity", "text_en"], # List all analyzers used in this link
             }
         },
-        # Add other view properties if needed (defaults from previous example)
-        "consolidationIntervalMsec": 1000,
-        "commitIntervalMsec": 1000,
-        "cleanupIntervalStep": 2,
-        # ... other potential view settings ...
+        # Consolidation policy - adjust based on update frequency and query needs
+        "consolidationIntervalMsec": 1000, # How often segments are merged (higher = less merge overhead, slower visibility)
+        "commitIntervalMsec": 1000, # How often changes are committed (higher = delay in visibility)
+        "cleanupIntervalStep": 2, # How often cleanup runs relative to commits/consolidations
+        # primarySort, storingValues, etc. can be added if needed
     }
     try:
-        existing_views = db.views()
-        view_info = next((v for v in existing_views if v["name"] == view_name), None)
-        if view_info is None:
+        if not db.has_view(view_name):
             logger.info(f"ArangoSearch View '{view_name}' not found. Creating...")
-            db.create_view(
-                view_name, view_type="arangosearch", properties=view_properties
-            )
-            logger.success(f"ArangoSearch View '{view_name}' created.")
-            return True
+            db.create_view(view_name, properties=view_properties)
+            logger.success(f"ArangoSearch View '{view_name}' created successfully.")
         else:
             logger.debug(
-                f"ArangoSearch View '{view_name}' already exists. Ensuring properties are up-to-date..."
+                f"ArangoSearch View '{view_name}' already exists. Ensuring properties are updated..."
             )
-            try:
-                # Corrected: Use db method to replace properties
-                db.replace_view(view_name, view_properties)
-                logger.info(
-                    f"ArangoSearch View '{view_name}' properties updated/verified."
-                )
-                return True
-            except (ArangoServerError, ArangoClientError) as update_err:
-                logger.error(
-                    f"Failed to update properties for ArangoSearch View '{view_name}'. See traceback.",
-                    exc_info=True,
-                )
-                return False  # Indicate failure on update error
-    except (ViewCreateError, ArangoServerError) as e:
+            # Update properties to match the desired state
+            db.replace_view_properties(view_name, view_properties)
+            logger.info(
+                f"ArangoSearch View '{view_name}' properties updated/verified."
+            )
+        return True
+    except (ViewCreateError, ArangoServerError, ArangoClientError) as e:
         logger.error(
-            f"Failed to ensure ArangoSearch View '{view_name}'. See traceback.",
+            f"Failed to ensure ArangoSearch View '{view_name}' for collection '{collection_name}'. Error: {e}",
             exc_info=True,
         )
         return False
     except Exception as e:
         logger.error(
-            f"An unexpected error occurred ensuring ArangoSearch View '{view_name}'. See traceback.",
+            f"An unexpected error occurred ensuring ArangoSearch View '{view_name}'. Error: {e}",
             exc_info=True,
         )
         return False
@@ -348,8 +336,8 @@ def ensure_vector_index(
     dimensions: int = EMBEDDING_DIMENSION,
 ) -> bool:
     """
-    Ensures a dedicated 'vector' index exists on the collection.
-    Reverted to this type based on troubleshooting for ERR 9.
+    Ensures a dedicated 'vector' index exists on the specified collection field.
+    Attempts to drop existing index by name first for idempotency.
 
     Args:
         db: The StandardDatabase object.
@@ -362,96 +350,105 @@ def ensure_vector_index(
         True if the index exists or was created successfully, False otherwise.
     """
     try:
+         # Check if collection exists
         if collection_name not in [c["name"] for c in db.collections()]:
-            logger.error(
-                "Cannot create vector index: Collection '{}' does not exist.",
-                collection_name,
-            )
-            return False
+             logger.error(
+                 f"Cannot create vector index '{index_name}': Collection '{collection_name}' does not exist."
+             )
+             return False
         collection = db.collection(collection_name)
 
         # --- Drop existing index by name first for idempotency ---
+        existing_index = None
         try:
             indexes = collection.indexes()
-            existing_index_info = next(
-                (idx for idx in indexes if idx.get("name") == index_name), None
-            )
-            if existing_index_info:
+            existing_index = next((idx for idx in indexes if idx.get("name") == index_name), None)
+            if existing_index:
                 logger.warning(
-                    "Found existing index named '{}'. Attempting to drop it before creation...",
-                    index_name,
+                    f"Found existing index named '{index_name}'. Attempting to drop it before creation..."
                 )
-                index_id_or_name = existing_index_info.get("id", index_name)
+                # Use ID if available, otherwise name (ID is more reliable)
+                index_id_or_name = existing_index.get("id", index_name)
                 if collection.delete_index(index_id_or_name, ignore_missing=True):
-                    logger.info("Successfully dropped existing index '{}'.", index_name)
+                     logger.info(f"Successfully dropped existing index '{index_name}' (ID: {index_id_or_name}).")
+                     existing_index = None # Mark as dropped
                 else:
-                    logger.warning(
-                        "Attempted to drop index '{}', but delete_index returned False.",
-                        index_name,
-                    )
+                    # This case might happen if the index exists but couldn't be dropped (permissions?)
+                     logger.warning(
+                         f"Attempted to drop index '{index_name}' (ID: {index_id_or_name}), but delete_index returned False or it was already gone."
+                     )
         except (IndexDeleteError, ArangoServerError, ArangoClientError) as drop_err:
-            logger.error(
-                "Error encountered while trying to drop existing index '{}'. Proceeding. Error: {}. See traceback.",
-                index_name,
-                drop_err,
-                exc_info=True,
-            )
+             # Log error but proceed with creation attempt
+             logger.error(
+                 f"Error encountered while trying to drop existing index '{index_name}'. Proceeding with creation attempt. Error: {drop_err}.",
+                 exc_info=True,
+             )
         # --- END DROP LOGIC ---
+
+        # If index still seems to exist after drop attempt (or drop failed), log and return False?
+        # Or assume creation will fail informatively? Let's try creation.
+        if existing_index:
+             logger.error(f"Failed to reliably drop existing index '{index_name}'. Aborting creation to avoid conflicts.")
+             return False
+
 
         # --- Attempt creation using "type": "vector" ---
         logger.info(
-            "Attempting to create dedicated 'vector' index '{}' on field '{}'...",
-            index_name,
-            embedding_field,
+            f"Creating 'vector' index '{index_name}' on collection '{collection_name}', field '{embedding_field}' (dim={dimensions})..."
         )
 
-        # Set higher when you get more records
-        # nList_count = max(len(collection.count()), 2)
-
+        # Define the index using the correct 'vector' type syntax for recent ArangoDB versions
         index_definition = {
-            "type": "vector",  # <-- CORRECT TYPE based on troubleshooting for ERR 9
+            "type": "vector",
             "name": index_name,
-            "fields": [embedding_field],  # Field containing the vector array
-            "params": {  # Parameters specific to the vector index
+            "fields": [embedding_field], # Field containing the vector array
+            "storedValues": [], # Optional: Fields to store directly in the index for faster retrieval (e.g., ['_key', 'tags'])
+            "cacheEnabled": False, # Optional: Enable index caching (check performance impact)
+            "estimate": False, # Optional: Use estimates for faster counts (can be less accurate)
+            # Specific parameters depend on the chosen vector index backend (e.g., HNSW is common)
+             # Example assumes default or HNSW-like parameters if applicable:
+            "params": {
                 "dimension": dimensions,
-                "metric": "cosine",  # Or "euclidean" / "l2"
-                "nLists": 2,  # Optional: Add if using IVF-type backend (less common now, HNSW often default)
-            },
-            # DO NOT add analyzers or analyzerDefinitions for this type
-            # "inBackground": True,      # Optional: Can still use background creation
+                "metric": "cosine" # Common choice for semantic similarity ('euclidean', 'dotproduct' also possible)
+                # Possible HNSW parameters (consult ArangoDB docs for current options):
+                # "m": 16, # Max connections per node per layer
+                # "efConstruction": 100, # Size of dynamic list for neighbor selection during build
+                # "efSearch": 100 # Size of dynamic list during search
+            }
+             # "inBackground": True, # Create index in background (useful for large collections)
         }
 
         logger.debug(
-            "Attempting to add 'vector' index with definition: {}", index_definition
+            f"Attempting to add 'vector' index with definition: {json.dumps(index_definition, indent=2)}"
         )
-        collection.add_index(index_definition)  # <--- Attempt creation
+        result = collection.add_index(index_definition) # Attempt creation
 
-        logger.success(
-            "Dedicated 'vector' index '{}' on field '{}' created.",
-            index_name,
-            embedding_field,
-        )
-        return True
+        if isinstance(result, dict) and result.get('id'):
+            logger.success(
+                f"Successfully created 'vector' index '{index_name}' on field '{embedding_field}' (ID: {result['id']})."
+            )
+            return True
+        else:
+            # Should ideally not happen if no exception occurred, but check just in case
+            logger.error(f"Index creation for '{index_name}' seemed successful but did not return expected ID. Result: {result}")
+            return False
 
-    # Keep the detailed error logging
-    except (IndexCreateError, ArangoServerError, KeyError) as e:
+    # --- Error Handling ---
+    except (IndexCreateError, ArangoServerError, ArangoClientError, KeyError) as e:
+        # Specific error for index creation issues
+        err_code = getattr(e, 'error_code', 'N/A')
+        err_msg = getattr(e, 'error_message', str(e))
         logger.error(
-            "Failed to create vector index '{}' on collection '{}'. See traceback for details.",
-            index_name,
-            collection_name,
-            exc_info=True,
+            f"Failed to create vector index '{index_name}' on collection '{collection_name}'. Error Code: {err_code}, Message: {err_msg}",
+            exc_info=True, # Include traceback
         )
-        # import traceback # Uncomment for explicit print if needed
-        # traceback.print_exc()
         return False
     except Exception as e:
+        # Catch any other unexpected errors
         logger.error(
-            "An unexpected error occurred ensuring vector index '{}'. See traceback for details.",
-            index_name,
+            f"An unexpected error occurred ensuring vector index '{index_name}'. Error: {e}",
             exc_info=True,
         )
-        # import traceback # Uncomment for explicit print if needed
-        # traceback.print_exc()
         return False
 
 
@@ -471,7 +468,8 @@ def truncate_collections(
 
     logger.warning(f"Attempting to truncate collections: {collections_to_truncate}")
     all_successful = True
-    existing_collections = [c["name"] for c in db.collections()]
+    existing_collections = [c["name"] for c in db.collections()] # Get list once
+
     for collection_name in collections_to_truncate:
         if collection_name in existing_collections:
             try:
@@ -482,13 +480,13 @@ def truncate_collections(
                 )
             except (ArangoServerError, ArangoClientError) as e:
                 logger.error(
-                    f"Failed to truncate collection '{collection_name}'. See traceback.",
+                    f"Failed to truncate collection '{collection_name}'. Error: {e}",
                     exc_info=True,
                 )
                 all_successful = False
             except Exception as e:
                 logger.error(
-                    f"Unexpected error truncating collection '{collection_name}'. See traceback.",
+                    f"Unexpected error truncating collection '{collection_name}': {e}",
                     exc_info=True,
                 )
                 all_successful = False
@@ -499,215 +497,450 @@ def truncate_collections(
     return all_successful
 
 
-# --- Modified Seeding Function (accepts list) ---
+# --- Modified Seeding Function (accepts collection_name, embedding_field, list) ---
 def seed_initial_data(
-    db: StandardDatabase, lessons_to_seed: List[Dict[str, Any]]
+    db: StandardDatabase,
+    collection_name: str,  # Added parameter
+    embedding_field: str,  # Added parameter
+    lessons_to_seed: List[Dict[str, Any]],
 ) -> bool:
-    """Generates embeddings and inserts lesson documents (from a provided list) into the collection."""
+    """Generates embeddings and inserts lesson documents (from a provided list) into the specified collection."""
     logger.info(
-        f"Starting data seeding for collection '{COLLECTION_NAME}' with {len(lessons_to_seed)} lessons..."
+        f"Starting data seeding for collection '{collection_name}' with {len(lessons_to_seed)} lessons..."
     )
     try:
-        if COLLECTION_NAME not in [c["name"] for c in db.collections()]:
+        # Use the passed collection_name
+        if collection_name not in [c["name"] for c in db.collections()]:
             logger.error(
-                f"Cannot seed data: Collection '{COLLECTION_NAME}' does not exist."
+                f"Cannot seed data: Collection '{collection_name}' does not exist."
             )
             return False
-        collection = db.collection(COLLECTION_NAME)
+        collection = db.collection(collection_name)  # Use passed name
     except Exception as e:
         logger.error(
-            f"Failed to get collection '{COLLECTION_NAME}' for seeding. Error: {e}",
+            f"Failed to get collection '{collection_name}' for seeding. Error: {e}",
             exc_info=True,
         )
         return False
 
     success_count, fail_count = 0, 0
+    # Ensure LiteLLM cache is initialized *before* this loop if embeddings are generated here
+    # Consider calling initialize_litellm_cache() once before calling seed_initial_data
+
     for i, lesson_doc in enumerate(lessons_to_seed):
-        logger.debug(f"Processing lesson {i + 1}/{len(lessons_to_seed)}...")
+        doc_key = lesson_doc.get("_key", f"lesson_{i+1}_{os.urandom(4).hex()}") # Generate key if missing
+        logger.debug(f"Processing lesson {i + 1}/{len(lessons_to_seed)} (Key: {doc_key})...")
         doc_to_insert = lesson_doc.copy()
-        text_to_embed = get_text_for_embedding(doc_to_insert)
-        if not text_to_embed:
-            logger.warning(
-                f"Skipping lesson {i + 1} due to empty text for embedding. Data: {lesson_doc.get('_key', lesson_doc.get('problem', 'N/A'))[:50]}..."
-            )
-            fail_count += 1
-            continue
-        embedding_vector = get_embedding(text_to_embed)
-        if embedding_vector is None:
-            logger.error(
-                f"Failed to generate embedding for lesson {i + 1}. Skipping insertion. Data: {lesson_doc.get('_key', lesson_doc.get('problem', 'N/A'))[:50]}..."
-            )
-            fail_count += 1
-            continue
-        doc_to_insert[EMBEDDING_FIELD] = embedding_vector
+
+        # Ensure _key is handled correctly
+        if "_key" in doc_to_insert:
+            doc_key = doc_to_insert.pop("_key") # Use provided key
+        doc_to_insert['_key'] = doc_key # Ensure _key is in the doc for insertion
+
+
+        # Check if embedding already exists (e.g., if re-seeding)
+        if embedding_field in doc_to_insert and doc_to_insert[embedding_field]:
+             logger.debug(f"Skipping embedding generation for {doc_key}, field '{embedding_field}' already exists.")
+        else:
+            text_to_embed = get_text_for_embedding(doc_to_insert)
+            if not text_to_embed:
+                logger.warning(
+                    f"Skipping embedding generation for {doc_key} due to empty text. Data: {str(lesson_doc)[:100]}..."
+                )
+                # Decide whether to insert doc without embedding or skip entirely
+                # Skipping entirely for now, as vector search relies on it.
+                fail_count += 1
+                continue
+
+            # Generate embedding
+            try:
+                 embedding_vector = get_embedding(text_to_embed) # Assumes get_embedding handles model selection/API keys
+                 if embedding_vector and isinstance(embedding_vector, list):
+                     # Use the passed embedding_field name
+                     doc_to_insert[embedding_field] = embedding_vector
+                     logger.debug(f"Generated embedding for {doc_key} (dim={len(embedding_vector)})")
+                 else:
+                     logger.error(
+                         f"Failed to generate valid embedding for {doc_key}. Skipping insertion."
+                     )
+                     fail_count += 1
+                     continue # Don't insert if embedding failed
+            except Exception as embed_err:
+                 logger.error(f"Error generating embedding for {doc_key}: {embed_err}", exc_info=True)
+                 fail_count += 1
+                 continue # Don't insert if embedding failed
+
+        # Insert or update the document
         try:
-            doc_key = doc_to_insert.pop("_key", None)
-            if doc_key:
-                doc_to_insert["_key"] = doc_key
-            meta = collection.insert(doc_to_insert, overwrite=True)
+            meta = collection.insert(doc_to_insert, overwrite=True) # Insert into correct collection, overwrite allows re-seeding
             logger.info(
-                f"Successfully inserted/updated lesson {i + 1} with key '{meta['_key']}'."
+                f"Successfully inserted/updated lesson {i + 1} with key '{meta['_key']}' into '{collection_name}'."
             )
             success_count += 1
-        except (DocumentInsertError, ArangoServerError) as e:
+        except (DocumentInsertError, ArangoServerError, ArangoClientError) as e:
             logger.error(
-                f"Failed to insert lesson {i + 1} (Key: {doc_key}). See traceback.",
+                f"Failed to insert/update lesson {i + 1} (Key: {doc_key}) into '{collection_name}'. Error: {e}",
                 exc_info=True,
             )
             fail_count += 1
-        except Exception as e:
-            logger.error(
-                f"Unexpected error inserting lesson {i + 1} (Key: {doc_key}). See traceback.",
-                exc_info=True,
-            )
-            fail_count += 1
+        except Exception as e: # Catch any other unexpected errors during insertion
+             logger.error(
+                 f"Unexpected error inserting lesson {i + 1} (Key: {doc_key}) into '{collection_name}'. Error: {e}",
+                 exc_info=True,
+             )
+             fail_count += 1
+
     logger.info(
-        f"Seeding finished. Success/Updated: {success_count}, Failed/Skipped: {fail_count}"
+        f"Seeding for '{collection_name}' finished. Success/Updated: {success_count}, Failed/Skipped: {fail_count}"
     )
-    return success_count > 0
+    # Return True only if all documents were seeded successfully? Or if at least one was?
+    # Let's return True if there were no failures.
+    return fail_count == 0 and success_count > 0
+
 
 def seed_test_relationship(db: StandardDatabase) -> bool:
     """Creates a single test edge relationship between known seed documents."""
-    logger.info("Attempting to seed a test relationship...")
+    # Check if edge collection exists
+    if EDGE_COLLECTION_NAME not in [c["name"] for c in db.collections()]:
+        logger.warning(f"Cannot seed test relationship: Edge collection '{EDGE_COLLECTION_NAME}' not found.")
+        return False
+
+    logger.info(f"Attempting to seed a test relationship in '{EDGE_COLLECTION_NAME}'...")
     try:
         edge_collection = db.collection(EDGE_COLLECTION_NAME)
     except Exception as e:
         logger.error(
-            f"Failed to get edge collection '{EDGE_COLLECTION_NAME}' for seeding relationship. Traceback:",
+            f"Failed to get edge collection '{EDGE_COLLECTION_NAME}' for seeding relationship. Error: {e}",
             exc_info=True,
         )
         return False
 
-    # Define the keys and relationship details
-    from_key = "planner_jq_tags_error_20250412195032"
-    to_key = "planner_human_verification_context_202504141035"
+    # --- Define the keys and relationship details ---
+    # Hardcoding keys is brittle; consider making these configurable or based on actual seeded data.
+    # These keys MUST exist in the COLLECTION_NAME for the edge to be valid.
+    from_key = "planner_jq_tags_error_20250412195032" # Example Key 1
+    to_key = "planner_human_verification_context_202504141035" # Example Key 2
+    # ------------------------------------------------
+
+    # Construct full document IDs
     from_id = f"{COLLECTION_NAME}/{from_key}"
     to_id = f"{COLLECTION_NAME}/{to_key}"
 
+    # Define the edge document
     edge_doc = {
         "_from": from_id,
         "_to": to_id,
-        "type": "RELATED",  # Example relationship type
-        "rationale": "Example relationship seeded by setup script for testing.",
-        "source": "arango_setup_seed",
+        "type": "RELATED_SETUP_TEST", # Example relationship type
+        "rationale": "Example relationship seeded by setup script for graph testing.",
+        "source": "arango_setup_seed_relationship",
+        "_key": f"rel_{from_key}_{to_key}" # Define a predictable key if needed
     }
 
     try:
-        # Check if edge already exists (simple check based on from/to/type)
-        # A more robust check might involve a unique hash or specific key if needed
-        cursor = db.aql.execute(
-            f"FOR e IN {EDGE_COLLECTION_NAME} FILTER e._from == @from AND e._to == @to AND e.type == @type RETURN e._key LIMIT 1",
-            bind_vars={"from": from_id, "to": to_id, "type": edge_doc["type"]},
-        )
-        if cursor.count() > 0:
-            logger.info(
-                f"Test relationship from '{from_key}' to '{to_key}' already exists."
-            )
-            return True
+        # Check if the specific edge key already exists
+        if edge_collection.has(edge_doc["_key"]):
+             logger.info(
+                 f"Test relationship with key '{edge_doc['_key']}' already exists in '{EDGE_COLLECTION_NAME}'."
+             )
+             return True
+
+        # Verify source and target documents exist before creating edge (optional but recommended)
+        try:
+            if not db.collection(COLLECTION_NAME).has(from_key):
+                 logger.error(f"Cannot create relationship: Source document '{from_id}' not found.")
+                 return False
+            if not db.collection(COLLECTION_NAME).has(to_key):
+                 logger.error(f"Cannot create relationship: Target document '{to_id}' not found.")
+                 return False
+        except (DocumentGetError, ArangoServerError, ArangoClientError) as doc_err:
+             logger.error(f"Error checking source/target document existence: {doc_err}", exc_info=True)
+             return False
+
 
         # Insert the new edge
-        meta = edge_collection.insert(edge_doc)
+        meta = edge_collection.insert(edge_doc, overwrite=False) # Don't overwrite if key exists
         logger.success(
-            f"Successfully seeded test relationship with key '{meta['_key']}' from '{from_key}' to '{to_key}'."
+            f"Successfully seeded test relationship with key '{meta['_key']}' from '{from_id}' to '{to_id}'."
         )
         return True
-    except (DocumentInsertError, ArangoServerError) as e:
+    except (DocumentInsertError, ArangoServerError, ArangoClientError) as e:
+         # Check for specific errors like "edge source/target vertex does not exist"
+        err_code = getattr(e, 'http_exception', {}).status_code if hasattr(e, 'http_exception') else 'N/A'
         logger.error(
-            f"Failed to insert test relationship from '{from_key}' to '{to_key}'. Does source/target exist? Traceback:",
+            f"Failed to insert test relationship from '{from_id}' to '{to_id}'. Potential missing vertices? HTTP Status: {err_code}. Error: {e}",
             exc_info=True,
         )
         return False
     except Exception as e:
         logger.error(
-            f"Unexpected error inserting test relationship. Traceback:", exc_info=True
+            f"Unexpected error inserting test relationship: {e}", exc_info=True
         )
         return False
-    
-# --- Modified initialize_database Function ---
+
+
+# --- initialize_database Function (Orchestrator) ---
 def initialize_database(
     run_setup: bool = True,
     truncate: bool = False,
     force_truncate: bool = False,
     seed_file_path: Optional[str] = None,
 ) -> Optional[StandardDatabase]:
-    """Main function to connect, optionally truncate, optionally seed, and ensure ArangoDB components."""
+    """
+    Main function to connect, optionally truncate, optionally seed, and ensure ArangoDB components.
+
+    Args:
+        run_setup: If True, ensure graph, view, and index structures are created/verified.
+        truncate: If True, delete data from main data/edge collections before setup.
+        force_truncate: If True, bypass the confirmation prompt for truncation.
+        seed_file_path: Path to a JSON file containing {'lessons': [...]} to seed data.
+
+    Returns:
+        StandardDatabase object if successful, None otherwise.
+    """
+    # Initialize LiteLLM Cache once at the beginning
+    try:
+        logger.info("Initializing LiteLLM Cache...")
+        initialize_litellm_cache(redis_required=False) # Allow fallback if Redis not configured
+        logger.info("LiteLLM Caching initialized (check logs for details).")
+    except Exception as cache_err:
+         logger.warning(f"Could not initialize LiteLLM Cache (may impact performance/cost): {cache_err}")
+         # Decide if this is fatal. If embedding needed for seeding, it might be.
+         if seed_file_path:
+              logger.error("Cannot seed data without successful LiteLLM initialization.")
+              return None
+
+
     client = connect_arango()
     if not client:
-        return None
-    db = ensure_database(client)
-    if not db:
-        return None
+        return None # Connection failed, logged in connect_arango
 
-    if truncate:  # Truncation logic
+    db = ensure_database(client) # Uses default ARANGO_DB_NAME
+    if not db:
+        return None # DB ensure failed, logged in ensure_database
+
+    if truncate:
         logger.warning("--- TRUNCATE REQUESTED ---")
+        # Define collections based on constants
         collections_to_clear = [COLLECTION_NAME, EDGE_COLLECTION_NAME]
         if not truncate_collections(db, collections_to_clear, force=force_truncate):
-            logger.error("Truncation failed/cancelled. Aborting.")
+            logger.error("Truncation failed or was cancelled. Aborting setup.")
             return None
         logger.info("--- Truncation complete ---")
 
     logger.info("Ensuring base collections exist...")
+    # Ensure base document and edge collections exist using the defaults
     collection_obj = ensure_collection(db, COLLECTION_NAME)
     edge_collection_obj = ensure_edge_collection(db, EDGE_COLLECTION_NAME)
-    # Corrected check based on previous debug
     if collection_obj is None or edge_collection_obj is None:
-        logger.error("Failed to ensure base collections exist. Aborting.")
+        logger.error("Failed to ensure base document or edge collections exist. Aborting.")
         return None
+    logger.success(f"Base collections '{COLLECTION_NAME}' and '{EDGE_COLLECTION_NAME}' ensured.")
 
-    # Seeding Logic
-    seeding_occurred = False  # Flag to track if seeding happened
+
+    # --- Seeding Logic ---
+    seeding_successful = False
     if seed_file_path:
         logger.info(f"--- SEED DATA REQUESTED from file: {seed_file_path} ---")
+        resolved_path = Path(seed_file_path).resolve()
+        if not resolved_path.is_file():
+             logger.error(f"Seed file not found at resolved path: {resolved_path}")
+             return None # Cannot seed if file doesn't exist
+
         try:
-            seed_data = load_json_file(seed_file_path)
+            seed_data = load_json_file(str(resolved_path))
             if seed_data is None:
-                logger.error(f"Seeding aborted: file empty/not found: {seed_file_path}")
+                logger.error(f"Seeding aborted: loaded data is None from: {resolved_path}")
                 return None
+
+            # Expecting format {'lessons': [...]}
             lessons_list = seed_data.get("lessons")
             if not isinstance(lessons_list, list):
                 logger.error(
-                    f"Seed file invalid: needs {{'lessons': [...]}}. Found: {type(lessons_list)}"
+                    f"Seed file '{resolved_path}' has invalid format: Top level key 'lessons' with a list value is required. Found type: {type(lessons_list)}"
                 )
                 return None
 
-            if seed_initial_data(db, lessons_list):
-                logger.info("--- Seeding documents complete ---")
-                seeding_occurred = True  # Mark that seeding happened
-                # --- Seed test relationship ONLY if document seeding occurred ---
+            # Seed the documents using the main collection name and embedding field
+            if seed_initial_data(db, COLLECTION_NAME, EMBEDDING_FIELD, lessons_list):
+                logger.info(f"--- Seeding documents into '{COLLECTION_NAME}' complete. ---")
+                seeding_successful = True
+                # Optionally seed test relationship IF document seeding occurred
+                # Note: seed_test_relationship uses hardcoded keys, ensure they exist in your seed data
                 if not seed_test_relationship(db):
-                    logger.warning("Failed to seed test relationship.")
-                # --- End seed test relationship ---
+                     logger.warning("Failed to seed test relationship (check logs and key existence).")
             else:
                 logger.warning(
-                    "Data seeding process inserted no data or encountered errors."
+                    f"Data seeding process for '{COLLECTION_NAME}' encountered errors or did not complete successfully. Check logs."
                 )
+                # Decide if this is fatal. For now, let setup continue.
+                # return None # Uncomment if seeding failure should abort entire setup
+
         except Exception as e:
             logger.error(
-                f"Error during seeding from file '{seed_file_path}'. Traceback:",
+                f"Error during seeding process from file '{resolved_path}'. Error: {e}",
                 exc_info=True,
             )
-            return None
+            return None # Abort if seeding process itself throws unexpected error
+    else:
+        logger.info("No seed file provided, skipping data seeding.")
 
-    # Run structure setup (Graph, View, Index)
+
+    # --- Run structure setup (Graph, View, Index) ---
     if run_setup:
         logger.info(
             "Starting ArangoDB structure setup/verification (Graph, View, Index)..."
         )
-        graph_obj = ensure_graph(db)
-        view_ok = ensure_search_view(db)
-        index_ok = ensure_vector_index(db)
+        # Ensure graph using default names
+        graph_obj = ensure_graph(db, GRAPH_NAME, EDGE_COLLECTION_NAME, COLLECTION_NAME)
+        if not graph_obj:
+             logger.warning(f"Graph '{GRAPH_NAME}' setup failed or encountered issues. Check logs.")
+             # Decide if this is fatal. Let's continue for now.
+
+        # Ensure view using default names, linked to main collection
+        view_ok = ensure_search_view(db, SEARCH_VIEW_NAME, COLLECTION_NAME)
+        if not view_ok:
+             logger.warning(f"ArangoSearch View '{SEARCH_VIEW_NAME}' setup failed or encountered issues. Check logs.")
+             # Decide if this is fatal. Continue for now.
+
+        # Ensure vector index using default names on main collection/field
+        index_ok = ensure_vector_index(db, COLLECTION_NAME, VECTOR_INDEX_NAME, EMBEDDING_FIELD, EMBEDDING_DIMENSION)
+        if not index_ok:
+             logger.error(f"Vector Index '{VECTOR_INDEX_NAME}' setup FAILED. This might break vector search. Check logs.")
+             # Make index failure fatal? Yes, usually required for functionality.
+             return None
+        else:
+             logger.success(f"Vector Index '{VECTOR_INDEX_NAME}' ensured successfully.")
+
         if not all([graph_obj, view_ok, index_ok]):
-            logger.error("Setup steps failed (Graph/View/Index). Check logs.")
-            return None
+            # Changed severity to warning as graph/view might not be strictly needed everywhere
+            logger.warning("One or more setup steps (Graph/View/Index) encountered issues. Setup finished, but check logs carefully.")
         else:
             logger.success(
                 "ArangoDB structure setup/verification complete (Graph, View, Index)."
             )
+    else:
+        logger.info("Skipping structure setup (Graph, View, Index) as run_setup=False.")
 
+
+    # Return the database handle if all critical steps succeeded
     return db
 
 
-# --- Main Execution Block ---
+# --- setup_arango_collection Function (More Generic Setup) ---
+def setup_arango_collection(
+    db_name: str,
+    collection_name: str,
+    seed_data: Optional[List[Dict[str, Any]]] = None,
+    truncate: bool = False, # Added truncate argument
+    embedding_field: str = EMBEDDING_FIELD,   # Allow override, default to global
+    embedding_dimension: int = EMBEDDING_DIMENSION, # Allow override
+    create_view: bool = True, # Flag to control view creation
+    create_index: bool = True, # Flag to control index creation
+) -> Optional[StandardDatabase]:
+    """
+    Sets up a specific ArangoDB collection with optional view, index, and data seeding.
+    Useful for creating temporary/test collections.
+
+    Args:
+        db_name: Name of the database to use/create.
+        collection_name: Name of the specific collection to use/create.
+        seed_data: Optional list of documents (WITHOUT embeddings) to seed.
+                   Embeddings will be generated during seeding if embedding_field is set.
+        truncate: If True, truncate the collection before seeding (if it exists).
+        embedding_field: The field name where embeddings will be stored/indexed.
+        embedding_dimension: The dimension expected for the vector index.
+        create_view: If True, create an ArangoSearch view linked to this collection.
+        create_index: If True, create a vector index on the embedding_field.
+
+    Returns:
+        StandardDatabase object if successful, None if any critical step fails.
+    """
+    # Note: LiteLLM Cache should be initialized *before* calling this function
+    # if seeding requires embedding generation.
+
+    # Connect to ArangoDB
+    client = connect_arango()
+    if not client:
+        logger.error("Failed to connect to ArangoDB")
+        return None
+
+    # Ensure database exists
+    db = ensure_database(client, db_name)
+    if not db:
+        logger.error(f"Failed to ensure database '{db_name}'")
+        return None
+
+    # Truncate if requested (and collection exists)
+    if truncate:
+        logger.warning(f"Truncate requested for collection '{collection_name}' in db '{db_name}'")
+        try:
+            if collection_name in [c["name"] for c in db.collections()]:
+                 logger.info(f"Truncating collection '{collection_name}'...")
+                 db.collection(collection_name).truncate()
+                 logger.success(f"Successfully truncated collection '{collection_name}'.")
+            else:
+                logger.info(f"Collection '{collection_name}' not found for truncation, skipping.")
+        except (ArangoServerError, ArangoClientError) as e:
+            logger.error(f"Failed to truncate collection '{collection_name}'. Error: {e}", exc_info=True)
+            # Make truncation failure fatal for this specific setup function? Yes, likely intended.
+            return None
+
+
+    # Create collection
+    try:
+        collection = ensure_collection(db, collection_name)
+        if not collection:
+            logger.error(f"Failed to ensure collection '{collection_name}' in db '{db_name}'")
+            return None # Collection is fundamental
+
+        # --- Use specific names for view and index based on collection ---
+        view_name = f"{collection_name}_view"
+        index_name = f"{collection_name}_vector_idx"
+        # ---------------------------------------------------------------
+
+        # Create search view linked to the collection if requested
+        if create_view:
+            if not ensure_search_view(db, view_name, collection_name): # Use generated view name
+                logger.error(f"Failed to create search view '{view_name}' for '{collection_name}'")
+                # Make view failure fatal? Depends on usage. Let's make it fatal here.
+                return None
+            logger.info(f"Successfully ensured search view '{view_name}' for '{collection_name}'.")
+
+        # Create vector index if requested
+        if create_index:
+            if not ensure_vector_index(
+                db,
+                collection_name=collection_name,
+                index_name=index_name, # Use generated index name
+                embedding_field=embedding_field, # Pass the embedding field name
+                dimensions=embedding_dimension, # Pass the dimension
+            ):
+                logger.error(f"Failed to create vector index '{index_name}' for '{collection_name}'")
+                # Make index failure fatal? Yes, required for vector search.
+                return None
+            logger.info(f"Successfully ensured vector index '{index_name}' for '{collection_name}'.")
+
+        # Seed data if provided
+        if seed_data:
+            logger.info(
+                f"Attempting to seed {len(seed_data)} documents into '{collection_name}'..."
+            )
+            # Pass collection_name and embedding_field to seed_initial_data
+            if not seed_initial_data(db, collection_name, embedding_field, seed_data):
+                logger.warning(f"Seeding process for '{collection_name}' completed with failures or no successes.")
+                # Make seeding failure fatal? If data is required for tests, yes.
+                return None
+            logger.info(f"Successfully completed seeding for '{collection_name}'.")
+
+
+        return db # Return the database handle if all required steps succeeded
+
+    except Exception as e:
+        logger.error(f"Error during setup for collection '{collection_name}' in db '{db_name}': {e}", exc_info=True)
+        return None
+
+
+# --- Main Execution Block (for running setup script directly) ---
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(
         description="Initialize or setup the ArangoDB database for MCP Doc Retriever."
@@ -715,7 +948,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--truncate",
         action="store_true",
-        help=f"WARNING: Delete data from '{COLLECTION_NAME}', '{EDGE_COLLECTION_NAME}' before setup.",
+        help=f"WARNING: Delete ALL data from '{COLLECTION_NAME}' and '{EDGE_COLLECTION_NAME}' before setup.",
     )
     parser.add_argument(
         "--seed-file",
@@ -732,34 +965,39 @@ if __name__ == "__main__":
     parser.add_argument(
         "--log-level",
         default=os.environ.get("LOG_LEVEL", "INFO").upper(),
-        help="Set logging level.",
+        choices=["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"],
+        help="Set logging level (DEBUG, INFO, WARNING, ERROR, CRITICAL).",
+    )
+    parser.add_argument(
+        "--skip-setup",
+        action="store_true",
+        help="Skip ensuring Graph, View, and Index structures (only connect, truncate, seed)."
     )
     args = parser.parse_args()
 
     # Configure logging
-    log_level = args.log_level.upper()
-    valid_levels = ["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"]
-    if log_level not in valid_levels:
-        print(
-            f"Warning: Invalid log level '{log_level}'. Defaulting to INFO.",
-            file=sys.stderr,
-        )
-        log_level = "INFO"
+    log_level = args.log_level
     logger.remove()
     logger.add(
-        sys.stderr, level=log_level, format="{time:HH:mm:ss} | {level: <7} | {message}"
+        sys.stderr,
+        level=log_level,
+        format="{time:YYYY-MM-DD HH:mm:ss.SSS} | {level: <7} | {name}:{function}:{line} - {message}", # Detailed format
+        colorize=True
     )
 
-    logger.info("Running ArangoDB setup script...")
+    logger.info("======== Running ArangoDB Setup Script ========")
     if args.truncate:
-        logger.warning("Truncate flag is set. Data will be deleted.")
+        logger.warning("Truncate flag [--truncate] is set. Existing data in main collections will be deleted.")
     if args.seed_file:
         logger.info(
-            f"Seed file provided: {args.seed_file}. Data will be inserted if file is valid."
+            f"Seed file [--seed-file] provided: {args.seed_file}. Data will be inserted if file is valid."
         )
+    if args.skip_setup:
+        logger.info("Skip setup [--skip-setup] flag is set. Graph, View, Index creation/verification will be skipped.")
 
+    # Call the main orchestrator function
     final_db = initialize_database(
-        run_setup=True,
+        run_setup=(not args.skip_setup), # Pass contrário of skip_setup
         truncate=args.truncate,
         force_truncate=args.yes,
         seed_file_path=args.seed_file,
@@ -767,33 +1005,34 @@ if __name__ == "__main__":
 
     if final_db:
         logger.info(
-            f"Successfully connected to database '{final_db.name}'. Setup process completed."
+            f"Successfully connected to database '{final_db.name}'. Setup process completed (check logs for details)."
         )
-        # Optional: Add post-setup checks again if desired
+        logger.info("Performing final checks...")
         try:
+            # Verify collection counts
             coll = final_db.collection(COLLECTION_NAME)
             edge_coll = final_db.collection(EDGE_COLLECTION_NAME)
             logger.info(f"Collection '{COLLECTION_NAME}' count: {coll.count()}")
-            logger.info(
-                f"Edge Collection '{EDGE_COLLECTION_NAME}' count: {edge_coll.count()}"
-            )
-            views = final_db.views()
-            if any(v["name"] == SEARCH_VIEW_NAME for v in views):
-                logger.info(f"Search View '{SEARCH_VIEW_NAME}' confirmed.")
-            else:
-                logger.warning(
-                    f"Search View '{SEARCH_VIEW_NAME}' check failed post-setup."
-                )
-            indexes = coll.indexes()
-            if any(i.get("name") == VECTOR_INDEX_NAME for i in indexes):
-                logger.info(f"Vector Index '{VECTOR_INDEX_NAME}' confirmed.")
-            else:
-                logger.warning(
-                    f"Vector Index '{VECTOR_INDEX_NAME}' check failed post-setup."
-                )
+            logger.info(f"Edge Collection '{EDGE_COLLECTION_NAME}' count: {edge_coll.count()}")
+
+            # Verify view existence (if setup was run)
+            if not args.skip_setup:
+                if final_db.has_view(SEARCH_VIEW_NAME):
+                    logger.info(f"Search View '{SEARCH_VIEW_NAME}' confirmed.")
+                else:
+                    logger.warning(f"Search View '{SEARCH_VIEW_NAME}' check FAILED post-setup.")
+
+                # Verify vector index existence (if setup was run)
+                indexes = coll.indexes()
+                if any(i.get('name') == VECTOR_INDEX_NAME and i.get('type') == 'vector' for i in indexes):
+                    logger.info(f"Vector Index '{VECTOR_INDEX_NAME}' confirmed.")
+                else:
+                    logger.warning(f"Vector Index '{VECTOR_INDEX_NAME}' check FAILED post-setup.")
         except Exception as check_err:
-            logger.warning(f"Could not perform post-setup checks: {check_err}")
+            logger.warning(f"Could not perform all post-setup checks: {check_err}")
+
+        logger.info("======== ArangoDB Setup Script Finished Successfully ========")
         sys.exit(0)
     else:
-        logger.error("ArangoDB connection or setup failed.")
+        logger.error("======== ArangoDB Setup Script FAILED ========")
         sys.exit(1)
