@@ -39,7 +39,19 @@ def find_relevant_files(repo_dir: str, exclude_patterns: List[str]) -> List[str]
         List[str]: A list of file paths that are considered relevant (not excluded).
     """
     relevant_files = []
-    for root, _, filenames in os.walk(repo_dir):
+    # Use topdown=True (default) to allow pruning directories
+    for root, dirnames, filenames in os.walk(repo_dir, topdown=True):
+        # Check if the current root is inside the .git directory
+        relative_root_str = str(Path(root).relative_to(repo_dir))
+        if relative_root_str == ".git" or relative_root_str.startswith(".git" + os.sep):
+            logger.debug(f"Skipping .git directory tree at {root}")
+            dirnames[:] = [] # Prevent descending further into .git
+            continue # Skip processing files/dirs in .git
+
+        # Original logic to prune .git if it appears in dirnames (redundant but safe)
+        if ".git" in dirnames:
+            dirnames.remove(".git")
+
         for filename in filenames:
             file_path = Path(root) / filename
             relative_path = file_path.relative_to(

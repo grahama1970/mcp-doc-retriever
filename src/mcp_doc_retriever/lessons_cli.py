@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import List, Optional, Dict, Any
 from loguru import logger
 import datetime
-from arango.exceptions import ArangoServerError, ConnectionError as ArangoConnectionError # Import Arango exceptions
+from arango.exceptions import ArangoServerError, ServerConnectionError as ArangoConnectionError # Import Arango exceptions
 
 # --- Import ArangoDB functions ---
 try:
