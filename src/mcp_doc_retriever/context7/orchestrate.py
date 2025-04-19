@@ -20,14 +20,17 @@ Expected Output:
         ]
     }
 """
-
+import asyncio
 import logging
+import tempfile
 from pathlib import Path
 from typing import Dict, List, Optional, Union, Any
 
 # Import core functionality using absolute imports
 from mcp_doc_retriever.downloader import web_downloader, git_downloader
 from mcp_doc_retriever.searcher import basic_extractor, scanner
+from mcp_doc_retriever.context7.sparse_checkout import sparse_checkout
+
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -110,12 +113,34 @@ class PipelineOrchestrator:
         try:
             # Choose appropriate downloader based on source type
             if source_type == 'git':
-                # Use git downloader (placeholder)
-                pass
+                try:
+                    # Create temporary directory for Git checkout
+                    temp_dir = Path(tempfile.mkdtemp(dir=self.base_path))
+                    logger.info(f"Created temporary directory for Git checkout: {temp_dir}")
+
+                    # Define patterns for documentation files
+                    patterns = ['*.md', '*.mdx', '*.rst', '*.txt', '*.ipynb']
+                    
+                    # Perform sparse checkout
+                    success = sparse_checkout(
+                        repo_url=source,
+                        output_dir=str(temp_dir),  # Convert Path to string
+                        patterns=patterns
+                    )
+                    
+                    if success:
+                        return {'success': True, 'content_path': str(temp_dir)}
+                    else:
+                        logger.error("Sparse checkout failed")
+                        return {'success': False, 'error': 'Sparse checkout failed'}
+                except Exception as e:
+                    logger.error(f"Git checkout failed: {str(e)}")
+                    return {'success': False, 'error': str(e)}
             else:
-                # Use web downloader (placeholder)
-                pass
-            return {'success': True, 'content_path': str(self.base_path / "content")}
+                # Simple web download placeholder (success case)
+                content_dir = self.base_path / "content"
+                content_dir.mkdir(exist_ok=True)
+                return {'success': True, 'content_path': str(content_dir)}
         except Exception as e:
             logger.error(f"Download failed: {str(e)}")
             return {'success': False, 'error': str(e)}
@@ -159,11 +184,32 @@ def orchestrate_pipeline(
     return asyncio.run(orchestrator.run_pipeline(source, source_type, search_query, **kwargs))
 
 if __name__ == "__main__":
-    # Example usage and basic functionality test
-    test_source = "https://example.com/docs"
-    result = orchestrate_pipeline(
-        source=test_source,
-        source_type="web",
-        search_query="api authentication"
-    )
-    print(f"Pipeline execution result: {result}")
+    # Set up a local downloads directory for testing
+    from pathlib import Path
+    test_downloads = Path(__file__).parent.parent.parent.parent / "downloads"
+    test_downloads.mkdir(exist_ok=True)
+    
+    # Example usage with both web and git sources
+    test_cases = [
+        {
+            "source": "https://example.com/docs",
+            "source_type": "web",
+            "search_query": "api authentication"
+        },
+        {
+            "source": "https://github.com/arangodb/python-arango.git",
+            "source_type": "git",
+            "search_query": "installation guide"
+        }
+    ]
+    
+    for test in test_cases:
+        print(f"\nTesting with {test['source_type']} source...")
+        # Create orchestrator with test downloads directory
+        orchestrator = PipelineOrchestrator(base_path=test_downloads)
+        result = asyncio.run(orchestrator.run_pipeline(
+            source=test["source"],
+            source_type=test["source_type"],
+            search_query=test["search_query"]
+        ))
+        print(f"Pipeline execution result: {result}")
