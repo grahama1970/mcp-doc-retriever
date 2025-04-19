@@ -23,15 +23,18 @@ Expected Output:
 import asyncio
 import logging
 import tempfile
+import nbformat
+from docutils.core import publish_string
 from pathlib import Path
 from typing import Dict, List, Optional, Union, Any
 
 # Import core functionality using absolute imports
 from mcp_doc_retriever.downloader import web_downloader, git_downloader
-from mcp_doc_retriever.searcher import basic_extractor, scanner
+from mcp_doc_retriever.searcher import basic_extractor
+from mcp_doc_retriever.searcher.markdown_extractor import extract_content_blocks_with_markdown_it
+from mcp_doc_retriever.searcher.basic_extractor import extract_text_with_selector
 from mcp_doc_retriever.context7.sparse_checkout import sparse_checkout
 from mcp_doc_retriever.context7.file_discovery import find_relevant_files
-
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -43,6 +46,7 @@ class PipelineOrchestrator:
     def __init__(self, base_path: Optional[Path] = None):
         """Initialize the orchestrator with configuration."""
         self.base_path = base_path or Path("/app/downloads")
+        self._results = []  # Initialize in-memory storage
         logger.info("Pipeline orchestrator initialized")
 
     async def run_pipeline(
@@ -103,7 +107,10 @@ class PipelineOrchestrator:
 
             # Step 3: Extract and process content
             content_path = Path(download_result.get('content_path', self.base_path / "content"))
-            processed_content = await self._process_content(content_path)
+            processed_content = await self._process_content(
+                content_path,
+                download_result.get('relevant_files', [])
+            )
 
             # Step 4: Store results in memory (file-based storage can be added later)
             self._store_results(processed_content)
@@ -160,21 +167,131 @@ class PipelineOrchestrator:
                 except Exception as e:
                     logger.error(f"Git checkout failed: {str(e)}")
                     return {'success': False, 'error': str(e)}
-            else:
+            elif source_type == 'web':
                 # Simple web download placeholder (success case)
                 content_dir = self.base_path / "content"
                 content_dir.mkdir(exist_ok=True)
                 return {'success': True, 'content_path': str(content_dir)}
+            elif source_type == 'local':
+                # For testing with local files
+                if not Path(source).exists():
+                    return {'success': False, 'error': f'Local path does not exist: {source}'}
+                return {'success': True, 'content_path': source}
+            else:
+                # Return error for unsupported source types
+                return {'success': False, 'error': f'Unsupported source type: {source_type}'}
         except Exception as e:
             logger.error(f"Download failed: {str(e)}")
             return {'success': False, 'error': str(e)}
 
-    async def _process_content(self, content_path: Path) -> List[Dict[str, Any]]:
-        """Extract and process content from downloaded files."""
-        logger.info(f"Processing content from {content_path}")
+    async def _process_content(self, content_path: Path, relevant_files: List[str]) -> List[Dict[str, Any]]:
+        """
+        Extract and process content from downloaded files based on file type.
+        
+        Args:
+            content_path: Base path where content is stored
+            relevant_files: List of relative file paths to process
+            
+        Returns:
+            List of processed content items with extracted text and metadata
+        """
+        logger.info(f"Processing {len(relevant_files)} files from {content_path}")
+        processed_data: List[Dict[str, Any]] = []
+        
         try:
-            # Basic content extraction (placeholder)
-            return []
+            for file_rel_path in relevant_files:
+                full_file_path = content_path / file_rel_path
+                file_suffix = full_file_path.suffix.lower()
+                content_map = {}
+                
+                try:
+                    if file_suffix in ['.md', '.mdx']:
+                        # Extract Markdown content using markdown-it
+                        content = full_file_path.read_text(encoding='utf-8')
+                        extracted_items = extract_content_blocks_with_markdown_it(content, str(full_file_path))
+                        for item in extracted_items:
+                            content_map = {
+                                'file_path': file_rel_path,
+                                'content': item.content,
+                                'type': item.type,
+                                'metadata': item.metadata or {},
+                                'language': item.language
+                            }
+                            processed_data.append(content_map)
+                            
+                    elif file_suffix == '.rst':
+                        # Convert RST to HTML using docutils, then extract text
+                        content = full_file_path.read_text(encoding='utf-8')
+                        html = publish_string(source=content, writer_name='html').decode('utf-8')
+                        text_content = extract_text_with_selector(
+                            full_file_path,
+                            selector='body',  # Extract main content
+                        )
+                        if text_content:
+                            content_map = {
+                                'file_path': file_rel_path,
+                                'content': '\n'.join(text_content),
+                                'type': 'text',
+                                'metadata': {'source': 'rst'},
+                            }
+                            processed_data.append(content_map)
+                            
+                    elif file_suffix == '.ipynb':
+                        # Process Jupyter notebook
+                        with full_file_path.open() as f:
+                            nb = nbformat.read(f, as_version=4)
+                            
+                        for cell in nb.cells:
+                            if cell.cell_type == 'markdown':
+                                md_items = extract_content_blocks_with_markdown_it(
+                                    cell.source,
+                                    str(full_file_path)
+                                )
+                                for item in md_items:
+                                    content_map = {
+                                        'file_path': file_rel_path,
+                                        'content': item.content,
+                                        'type': item.type,
+                                        'metadata': {
+                                            'cell_type': 'markdown',
+                                            **(item.metadata or {})
+                                        },
+                                        'language': item.language
+                                    }
+                                    processed_data.append(content_map)
+                            elif cell.cell_type == 'code':
+                                content_map = {
+                                    'file_path': file_rel_path,
+                                    'content': cell.source,
+                                    'type': 'code',
+                                    'metadata': {
+                                        'cell_type': 'code',
+                                        'outputs': [str(o) for o in cell.outputs] if hasattr(cell, 'outputs') else []
+                                    },
+                                    'language': cell.metadata.get('language', 'python')
+                                }
+                                processed_data.append(content_map)
+                                
+                    elif file_suffix == '.txt':
+                        # Process plain text files
+                        content = full_file_path.read_text(encoding='utf-8')
+                        content_map = {
+                            'file_path': file_rel_path,
+                            'content': content,
+                            'type': 'text',
+                            'metadata': {'source': 'txt'},
+                        }
+                        processed_data.append(content_map)
+                        
+                    else:
+                        logger.warning(f"Unsupported file type skipped: {file_rel_path}")
+                        
+                except Exception as file_error:
+                    logger.error(f"Error processing file {file_rel_path}: {str(file_error)}")
+                    continue  # Skip this file but continue with others
+                    
+            return processed_data
+            
         except Exception as e:
             logger.error(f"Processing failed: {str(e)}")
             return []
@@ -188,8 +305,23 @@ class PipelineOrchestrator:
         """Execute search query on processed content."""
         logger.info(f"Executing search query: {query}")
         try:
-            # Search logic (placeholder)
-            return []
+            # Simple case-insensitive text search on stored results
+            matches = []
+            query_lower = query.lower()
+            for item in self._results:
+                content = item.get('content', '').lower()
+                if query_lower in content:
+                    relevance = float(len(query_lower)) / len(content) if content else 0.0
+                    matches.append({
+                        'content': item['content'],
+                        'type': item.get('type', 'text'),
+                        'file_path': item.get('file_path', ''),
+                        'relevance': relevance,
+                        'metadata': item.get('metadata', {})
+                    })
+            # Sort by relevance score
+            matches.sort(key=lambda x: x['relevance'], reverse=True)
+            return matches
         except Exception as e:
             logger.error(f"Search failed: {str(e)}")
             return []
@@ -214,16 +346,70 @@ if __name__ == "__main__":
     test_downloads.mkdir(exist_ok=True)
     
     # Example usage with both web and git sources
+    # Create test files of different types
+    test_dir = test_downloads / "content"
+    test_dir.mkdir(exist_ok=True)
+    
+    # Test Markdown file
+    md_content = """
+    # Test Header
+    
+    This is a test paragraph.
+    
+    ```python
+    def test_func():
+        print("Hello")
+    ```
+    """
+    (test_dir / "test.md").write_text(md_content)
+    
+    # Test RST file
+    rst_content = """
+    Test Title
+    ==========
+    
+    This is a reStructuredText test.
+    
+    .. code-block:: python
+    
+       def rst_func():
+           print("RST")
+    """
+    (test_dir / "test.rst").write_text(rst_content)
+    
+    # Test Jupyter notebook
+    nb_content = {
+        "cells": [
+            {
+                "cell_type": "markdown",
+                "source": "## Notebook Test\n\nMarkdown cell.",
+                "metadata": {}
+            },
+            {
+                "cell_type": "code",
+                "source": "print('Notebook code')",
+                "outputs": [],
+                "metadata": {"language": "python"}
+            }
+        ],
+        "metadata": {},
+        "nbformat": 4,
+        "nbformat_minor": 4
+    }
+    import json
+    (test_dir / "test.ipynb").write_text(json.dumps(nb_content))
+    
+    # Test cases with actual files
     test_cases = [
         {
-            "source": "https://example.com/docs",
-            "source_type": "web",
-            "search_query": "api authentication"
-        },
-        {
-            "source": "https://github.com/arangodb/python-arango.git",
-            "source_type": "git",
-            "search_query": "installation guide"
+            "source": str(test_dir),
+            "source_type": "local",
+            "relevant_files": [
+                "test.md",
+                "test.rst",
+                "test.ipynb"
+            ],
+            "search_query": "test"
         }
     ]
     
