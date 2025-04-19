@@ -30,6 +30,7 @@ from typing import Dict, List, Optional, Union, Any
 from mcp_doc_retriever.downloader import web_downloader, git_downloader
 from mcp_doc_retriever.searcher import basic_extractor, scanner
 from mcp_doc_retriever.context7.sparse_checkout import sparse_checkout
+from mcp_doc_retriever.context7.file_discovery import find_relevant_files
 
 
 # Configure logging
@@ -76,6 +77,29 @@ class PipelineOrchestrator:
             )
             if not download_result.get('success'):
                 return {'status': 'error', 'message': 'Download failed'}
+
+            # Step 2.5: Find relevant files after successful download
+            exclude_patterns = [
+                '*.png', '*.jpg', '*.jpeg', '*.gif', '*.pdf',
+                '*.zip', '*.gz', '*.tar', '*.exe', '*.dll',
+                '*.so', '*.o', '*.class', '*.jar', '*.pyc'
+            ]
+            content_path = download_result.get('content_path')
+            if not content_path:
+                return {'status': 'error', 'message': 'Download succeeded but content path is missing'}
+
+            try:
+                relevant_files = find_relevant_files(
+                    repo_dir=str(content_path),
+                    exclude_patterns=exclude_patterns
+                )
+                logger.info(f"Found {len(relevant_files)} relevant files after filtering.")
+
+                # Store the relevant files in the download result for processing
+                download_result['relevant_files'] = relevant_files
+            except Exception as e:
+                logger.error(f"File discovery failed: {str(e)}")
+                return {'status': 'error', 'message': f'File discovery failed: {str(e)}'}
 
             # Step 3: Extract and process content
             content_path = Path(download_result.get('content_path', self.base_path / "content"))
