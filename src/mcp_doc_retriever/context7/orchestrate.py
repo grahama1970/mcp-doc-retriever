@@ -235,7 +235,8 @@ def process_repository_logic(
 
             # Redirect Loguru output to a file during tqdm loop
             log_file = "processing_log.txt"
-            # logger.add(log_file, level="DEBUG", format="{time} - {level} - {message}") this will fill it
+            logger.add(log_file, level="DEBUG", format="{time} - {level} - {message}")
+            import sys
 
             # Use tqdm for the file processing loop
             for file_path in tqdm(relevant_files, desc="Processing Files"):
@@ -282,11 +283,10 @@ def process_repository_logic(
                 if extracted_data:
                     logger.info(f"Extracted data from {file_path}")
                 else:
-                    logger.info(f"No content extracted from this file.")
+                    logger.info(f"No content extracted from {file_path}.")
 
-            # Remove Loguru file handler and re-add the console handler
-            # logger.remove()# this will make it very chatty
-            # logger.add(sys.stderr, level="INFO")
+            logger.remove()
+            logger.add(sys.stderr, level="INFO")
 
         else:
             logger.error("Checkout error")
@@ -358,7 +358,7 @@ import sys
 
 async def test_all() -> None:
     """Runs tests to ensure that the code is working."""
-    test_repo = "https://github.com/grahama1970/mcp-doc-retriever-test-repo.git"  # test_repo set correctly!
+    test_repo = "https://github.com/grahama1970/mcp-doc-retriever-test-repo.git"  # Replace with your test repo URL
     output_dir = Path("/tmp/mcp-doc-retriever-test-repo")
     exclude_patterns: List[str] = []
 
@@ -370,6 +370,16 @@ async def test_all() -> None:
     if os.path.exists(output_dir):
         shutil.rmtree(output_dir)
         logger.info(f"Removed existing test directory {output_dir}")
+    db = setup_database(
+        host="http://localhost:8529",
+        db_name="test_context7",
+        truncate=True,
+        seed_file=None,
+        force=True,
+        skip_setup=True,
+    )
+    if not db:
+        raise AssertionError("Setup database did not complete. Check the logs!")
 
     process_repository_logic(test_repo, output_dir, exclude_patterns)
     logger.info("Process test complete.")
@@ -427,9 +437,7 @@ async def test_all() -> None:
 
     # Get counts
     count = collection.count()
-    assert count > 0, (
-        f"The number of extracted code is '{count}' in the database. This likely means you cannot persist in the Arango Database"
-    )
+    assert count > 0, f"The number of extracted code is '{count}' in the database"
     logger.info(
         f"Number of items in ArangoDB '' collection after processing is {count}"
     )

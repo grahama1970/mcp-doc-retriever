@@ -40,6 +40,8 @@ dependencies = [
     "deepmerge>=2.0",
     "async-timeout>=5.0.1",
     "tenacity>=9.1.2",
+    "jupyter>=1.1.1",
+    "jupyter-contrib-nbextensions>=0.7.0",
 ]
     
 
