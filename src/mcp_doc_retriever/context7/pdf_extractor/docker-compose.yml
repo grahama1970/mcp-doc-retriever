@@ -1,0 +1,41 @@
+version: '3.8'
+
+services:
+  labelstudio:
+    image: heartexlabs/label-studio:latest
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./label-studio-data:/label-studio/data
+      - ./corrections:/app/corrections
+    environment:
+      - LABEL_STUDIO_LOCAL_FILES_SERVING_ENABLED=true
+      - LABEL_STUDIO_LOCAL_FILES_DOCUMENT_ROOT=/app/corrections
+    networks:
+      - pdf-extraction-network
+
+  flask-api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "5000:5000"
+    volumes:
+      - ./uploads:/app/uploads
+      - ./output:/app/output
+      - ./corrections:/app/corrections
+    environment:
+      - OUTPUT_DIR=/app/output
+      - CORRECTIONS_DIR=/app/corrections
+    networks:
+      - pdf-extraction-network
+
+volumes:
+  label-studio-data:
+  uploads:
+  output:
+  corrections:
+
+networks:
+  pdf-extraction-network:
+    driver: bridge

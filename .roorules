@@ -33,6 +33,7 @@
 - Explain your reasoning before providing code.
 - Focus on code readability and maintainability.
 - Do NOT be clever. Always prefer the simplest solution that is most likely to work and is NOT brittle
+- **Prioritize Runtime Correctness:** While static analysis (like Pylance, MyPy) is valuable, ensure code functions correctly at runtime. Address runtime errors and logical flaws first. Static analysis warnings, especially those related to complex type inference with dynamic libraries (e.g., BeautifulSoup), can be addressed later or suppressed with `# type: ignore` if confirmed to be false positives after runtime verification.
 - Prioritize using the most common libraries in the community.
 - Always prefer official, maintained containers or packages over custom builds when available. Avoid redundant work and reduce maintenance burden by leveraging upstream expertise.
 
@@ -206,5 +207,3 @@ Consequences for Violations
   - **Never rely solely on inner function error handling**; the orchestration must capture and log all exceptions.
   - If silent failures persist, **refactor the orchestration layer** to expose root causes before patching inner functions.
   - This ensures failures are observable, diagnosable, and fixable.
-```
-

@@ -1,0 +1,50 @@
+<View>
+  <!-- Display the PDF page image -->
+  <Image name="pdf_page" value="$pdf_page_url" zoom="true" zoomControl="true" rotateControl="true"/>
+
+  <!-- Bounding box labeling for tables -->
+  <RectangleLabels name="table_bbox_label" toName="pdf_page">
+    <Label value="Table" background="blue"/>
+  </RectangleLabels>
+
+  <!-- Display extracted table information -->
+  <Header value="Extracted Table Information"/>
+  <Text name="table_info" value="ID: $table_id | Source: $source | Needs Review: $needs_review" />
+
+  <!-- Allow editing/viewing the table data -->
+  <!-- Consider making this editable=true if direct editing is desired -->
+  <Table name="table_data" value="$table_data" editable="true"/>
+
+  <!-- Validation choices for the human reviewer -->
+  <Choices name="validation_status" toName="pdf_page" choice="single" required="true" showInline="true">
+    <Choice value="Approve" hint="Table is correct as extracted"/>
+    <Choice value="Edit" hint="Table data or bbox was modified"/>
+    <Choice value="Reject" hint="This is not a valid table/ignore it"/>
+    <Choice value="Add Table" hint="Manually added this table"/>
+    <Choice value="Merge" hint="Merge this table with another (specify target below)"/>
+    <!-- <Choice value="Reextract" hint="Mark for re-extraction with different parameters"/> -->
+  </Choices>
+
+  <!-- Text area for merge instructions -->
+  <TextArea name="merge_instruction" toName="pdf_page"
+            placeholder="If 'Merge' selected, enter TARGET table ID here (e.g., camelot_p3_t1)"
+            rows="1" editable="true"
+            visibleWhen="choice-selected" whenTagName="validation_status" whenChoiceValue="Merge"/>
+
+  <!-- Optional: Re-extraction parameters (can be hidden initially) -->
+  <!-- <Header value="Re-extraction Parameters (Optional)" visibleWhen="choice-selected" whenTagName="validation_status" whenChoiceValue="Reextract"/>
+  <Choices name="flavor" toName="pdf_page" choice="single"
+           visibleWhen="choice-selected" whenTagName="validation_status" whenChoiceValue="Reextract">
+    <Choice value="lattice"/>
+    <Choice value="stream"/>
+  </Choices>
+  <Number name="line_scale" toName="pdf_page" min="10" max="100" step="5" default="40"
+           visibleWhen="choice-selected" whenTagName="validation_status" whenChoiceValue="Reextract"/>
+  <Number name="edge_tol" toName="pdf_page" min="50" max="1000" step="50" default="500"
+           visibleWhen="choice-selected" whenTagName="validation_status" whenChoiceValue="Reextract"/> -->
+
+  <!-- Add a general comment field -->
+  <Header value="Reviewer Comments (Optional)"/>
+  <TextArea name="comment" toName="pdf_page" placeholder="Add any comments about this table..." rows="2" editable="true" maxLength="500"/>
+
+</View>
