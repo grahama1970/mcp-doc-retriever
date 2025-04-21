@@ -31,13 +31,11 @@ Usage:
     ```
 """
 
-import os
-from pathlib import Path # Import Path
-import sys # Import sys
-import tempfile
 import json
+import os
+import tempfile
+from pathlib import Path
 from typing import List, Dict, Any
-from typing import List, Dict
 from fastapi import FastAPI, UploadFile, File, Form, HTTPException
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
@@ -45,7 +43,8 @@ from loguru import logger
 import uvicorn
 
 from .config import DEFAULT_OUTPUT_DIR, DEFAULT_CORRECTIONS_DIR
-from .pdf_to_json_converter import convert_pdf_to_json
+from ._archive.pdf_to_json_converter import convert_pdf_to_json
+from .utils import fix_sys_path
 
 # Initialize FastAPI app
 app = FastAPI(
@@ -59,7 +58,7 @@ class ConversionResponse(BaseModel):
     """Response model for conversion endpoint."""
     status: str
     message: str
-    data: List[Dict[str, Any]] # Use Any for dictionary values
+    data: List[Dict[str, Any]]
 
 class StatusResponse(BaseModel):
     """Response model for status endpoint."""
@@ -89,21 +88,27 @@ async def convert_pdf_endpoint(
     Returns:
         ConversionResponse with status, message, and extracted data.
     """
-    # Check if filename exists before calling lower()
     if not file.filename or not file.filename.lower().endswith(".pdf"):
         logger.error(f"Invalid file type: {file.filename}")
         raise HTTPException(status_code=400, detail="Only PDF files are supported.")
 
-    logger.info(f"Processing file: {file.filename}, repo_link: {repo_link}")
+    # Check directory permissions
+    for dir_path in [output_dir, corrections_dir]:
+        dir_obj = Path(dir_path)
+        try:
+            dir_obj.mkdir(parents=True, exist_ok=True)
+            if not os.access(dir_obj, os.W_OK):
+                raise PermissionError(f"Write permission denied for {dir_path}")
+        except Exception as e:
+            logger.error(f"Failed to access directory {dir_path}: {e}")
+            raise HTTPException(status_code=500, detail=f"Directory access failed: {str(e)}")
 
+    logger.info(f"Processing file: {file.filename}, repo_link: {repo_link}")
+    temp_path = None
     try:
-        # Save uploaded file temporarily
         with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as temp_file:
             temp_file.write(await file.read())
             temp_path = temp_file.name
-
-        # Run conversion
-        # Use the correct function name
         result = convert_pdf_to_json(
             pdf_path=temp_path,
             repo_link=repo_link,
@@ -112,27 +117,28 @@ async def convert_pdf_endpoint(
             corrections_dir=corrections_dir,
             force_qwen=force_qwen
         )
-
-        # Clean up
-        os.unlink(temp_path)
-
         if not result:
             logger.warning("No data extracted from PDF.")
             return ConversionResponse(
                 status="success",
                 message="No content extracted from the PDF.",
-                data=[] # Provide empty list for data
+                data=[]
             )
         logger.info(f"Extracted {len(result)} elements from {file.filename}")
         return ConversionResponse(
             status="success",
-            message="PDF converted successfully.",
+            message=f"PDF converted successfully. Extracted {len(result)} elements.",
             data=result
         )
-
     except Exception as e:
         logger.error(f"Conversion failed: {e}")
         raise HTTPException(status_code=500, detail=f"Conversion failed: {str(e)}")
+    finally:
+        if temp_path and os.path.exists(temp_path):
+            try:
+                os.unlink(temp_path)
+            except Exception as e:
+                logger.warning(f"Failed to delete temporary file {temp_path}: {e}")
 
 @app.get("/status", response_model=StatusResponse)
 async def status_endpoint():
@@ -155,11 +161,9 @@ def usage_function():
     Returns:
         dict: Simulated API response.
     """
-    # Use a PDF from the correct input directory, relative to this script
     sample_pdf = "input/BHT_CV32A65X.pdf"
     repo_link = "https://github.com/example/repo"
     try:
-        # Use the correct function name
         result = convert_pdf_to_json(sample_pdf, repo_link)
         return {
             "status": "success",
@@ -174,27 +178,10 @@ def usage_function():
         }
 
 if __name__ == "__main__":
-    # --- Fix for standalone execution ---
-    # Add the 'src' directory to sys.path to allow relative imports
-    project_root = Path(__file__).resolve().parents[3] # Go up 3 levels (pdf_extractor -> context7 -> mcp_doc_retriever -> src)
-    src_path = project_root / "src"
-    if str(src_path) not in sys.path:
-        sys.path.insert(0, str(src_path))
-        logger.info(f"Added {src_path} to sys.path for standalone run.")
-    # Re-import necessary modules after path modification if needed,
-    # but imports at top level should work now.
-    # ------------------------------------
-
-    # Test basic functionality
+    fix_sys_path(__file__)
     logger.info("Testing API usage function...")
     result = usage_function()
     print("API Usage Function Result:")
     print(json.dumps(result, indent=2))
-
-    # Note: The uvicorn server run below will likely prevent the script
-    # from exiting cleanly after the usage_function test in standalone mode.
-    # This is acceptable for verification purposes.
-
-    # Run the FastAPI server
     logger.info("Starting FastAPI server...")
     uvicorn.run(app, host="0.0.0.0", port=8000)

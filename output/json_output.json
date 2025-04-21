@@ -1,0 +1,40 @@
+[
+  {
+    "type": "table",
+    "content": "[[\"Header 1\", \"Header 2\"], [\"Data 1\", \"Data 2\"]]",
+    "metadata": {
+      "page": 1,
+      "rows": 2,
+      "cols": 2,
+      "source": "basic_extractor"
+    },
+    "file_path": "/Users/robert/Documents/dev/workspace/experiments/mcp-doc-retriver/src/mcp_doc_retriever/context7/pdf_extractor/input/BHT_CV32A65X.pdf",
+    "extraction_date": "2025-04-21T08:32:24.015695",
+    "section_path": [
+      "1. Document"
+    ],
+    "section_id": "section_1",
+    "token_count": 20,
+    "repo_link": "https://github.com/example/repo",
+    "source": "basic_json",
+    "needs_review": true,
+    "table_id": "92910850-2d4f-489d-a9c8-abb0e319f9e7"
+  },
+  {
+    "type": "text",
+    "content": "This is basic content extracted from BHT_CV32A65X.pdf.",
+    "metadata": {
+      "page": 1,
+      "source": "basic_extractor"
+    },
+    "file_path": "/Users/robert/Documents/dev/workspace/experiments/mcp-doc-retriver/src/mcp_doc_retriever/context7/pdf_extractor/input/BHT_CV32A65X.pdf",
+    "extraction_date": "2025-04-21T08:32:24.015695",
+    "section_path": [
+      "1. Document"
+    ],
+    "section_id": "section_1",
+    "token_count": 15,
+    "repo_link": "https://github.com/example/repo",
+    "source": "basic_json"
+  }
+]

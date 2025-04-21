@@ -28,16 +28,16 @@ Usage:
     ```
 """
 
-import os
-import sys # Import sys
 import json
 from pathlib import Path
-from typing import List, Dict, Any # Import Any
+from typing import List, Dict, Any
 import typer
 from loguru import logger
+import os
 
 from .config import DEFAULT_OUTPUT_DIR, DEFAULT_CORRECTIONS_DIR
-from .pdf_to_json_converter import convert_pdf_to_json
+from ._archive.pdf_to_json_converter import convert_pdf_to_json
+from .utils import fix_sys_path
 
 app = typer.Typer(
     name="pdf-extractor",
@@ -75,54 +75,59 @@ def convert(
         output_dir: Directory for JSON output.
         corrections_dir: Directory for correction files.
     """
-    # Keep pdf_path as string for the argument, create Path object separately
     pdf_path_obj = Path(pdf_path).resolve()
     if not pdf_path_obj.is_file() or not pdf_path_obj.suffix.lower() == ".pdf":
         logger.error(f"Invalid PDF file: {pdf_path_obj}")
         typer.echo(f"Error: '{pdf_path_obj}' is not a valid PDF file.")
         raise typer.Exit(code=1)
 
-    logger.info(f"Converting PDF: {pdf_path_obj}, repo_link: {repo_link}")
-    os.makedirs(output_dir, exist_ok=True)
-    os.makedirs(corrections_dir, exist_ok=True)
+    # Check directory permissions
+    for dir_path in [output_dir, corrections_dir]:
+        dir_obj = Path(dir_path)
+        try:
+            dir_obj.mkdir(parents=True, exist_ok=True)
+            if not os.access(dir_obj, os.W_OK):
+                raise PermissionError(f"Write permission denied for {dir_path}")
+        except Exception as e:
+            logger.error(f"Failed to access directory {dir_path}: {e}")
+            typer.echo(f"Error: Directory access failed: {str(e)}")
+            raise typer.Exit(code=1)
 
+    logger.info(f"Converting PDF: {pdf_path_obj}, repo_link: {repo_link}")
     try:
-        # Use the correct function name
         result = convert_pdf_to_json(
-            pdf_path=str(pdf_path_obj), # Pass the string representation
+            pdf_path=str(pdf_path_obj),
             repo_link=repo_link,
             output_dir=output_dir,
             use_marker_markdown=use_marker_markdown,
             corrections_dir=corrections_dir,
             force_qwen=force_qwen,
         )
-        output_json = Path(output_dir) / f"{pdf_path_obj.stem}_structured.json" # Use Path object
+        output_json = Path(output_dir) / f"{pdf_path_obj.stem}_structured.json"
         with open(output_json, "w", encoding="utf-8") as f:
             json.dump(result, f, indent=2, ensure_ascii=False)
 
-        logger.info(f"Converted {pdf_path_obj.name}. Saved to {output_json}") # Use Path object
-        typer.echo(f"Successfully converted '{pdf_path_obj.name}' to JSON.") # Use Path object
+        logger.info(f"Converted {pdf_path_obj.name}. Saved to {output_json}")
+        typer.echo(f"Successfully converted '{pdf_path_obj.name}' to JSON.")
         typer.echo(f"Output saved to: {output_json}")
         typer.echo(f"Elements extracted: {len(result)}")
     except Exception as e:
-        logger.error(f"Conversion failed for '{pdf_path_obj}': {e}") # Use Path object
+        logger.error(f"Conversion failed for '{pdf_path_obj}': {e}")
         typer.echo(f"Error: Conversion failed: {str(e)}")
         raise typer.Exit(code=1)
 
 
-def usage_function() -> Dict[str, Any]: # Change return type hint
+def usage_function() -> Dict[str, Any]:
     """
     Simulates CLI usage by running a conversion.
 
     Returns:
         dict: Simulated CLI result.
     """
-    # Use a PDF from the correct input directory, relative to this script
     sample_pdf = "input/BHT_CV32A65X.pdf"
     repo_link = "https://github.com/example/repo"
     output_dir = DEFAULT_OUTPUT_DIR
     try:
-        # Use the correct function name
         result = convert_pdf_to_json(
             pdf_path=sample_pdf,
             repo_link=repo_link,
@@ -145,17 +150,7 @@ def usage_function() -> Dict[str, Any]: # Change return type hint
 
 
 if __name__ == "__main__":
-    # --- Fix for standalone execution ---
-    # Add the 'src' directory to sys.path to allow relative imports
-    project_root = Path(__file__).resolve().parents[3] # Go up 3 levels (pdf_extractor -> context7 -> mcp_doc_retriever -> src)
-    src_path = project_root / "src"
-    if str(src_path) not in sys.path:
-        sys.path.insert(0, str(src_path))
-        logger.info(f"Added {src_path} to sys.path for standalone run.")
-    # Re-import necessary modules after path modification if needed,
-    # but imports at top level should work now.
-    # ------------------------------------
-
+    fix_sys_path(__file__)
     logger.info("Testing CLI usage function...")
     result = usage_function()
     print("CLI Usage Function Result:")

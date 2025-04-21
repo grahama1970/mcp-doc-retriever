@@ -52,6 +52,8 @@ dependencies = [
     "camelot-py[cv]>=1.0.0",
     "marker>=2.1.3",
     "pdf2image>=1.17.0",
+    "gunicorn>=21.2.0", # Added for production server
+    "pillow>=11.2.1",
 ]
     
 

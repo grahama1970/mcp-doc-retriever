@@ -1,12 +1,38 @@
 services:
-  mcp-doc-retriever:
-    container_name: mcp-doc-retriever
-    build: .
+  labelstudio:
+    image: heartexlabs/label-studio:latest
+    container_name: labelstudio
     ports:
-      - "8001:8000"
+      - "8080:8080"
     volumes:
-      - download_data:/app/downloads
-    restart: unless-stopped
+      - uploads:/label-studio/data/uploads
+      - label-studio-data:/label-studio/data
+      - corrections:/label-studio/data/corrections
+    environment:
+      - LABEL_STUDIO_LOCAL_FILES_SERVING_ENABLED=true
+      - LABEL_STUDIO_LOCAL_FILES_DOCUMENT_ROOT=/label-studio/data
+    depends_on:
+      - flask-api
+
+  flask-api:
+    build: 
+      context: .
+      dockerfile: src/mcp_doc_retriever/context7/Dockerfile
+    container_name: flask-api
+    ports:
+      - "5000:5000"
+    volumes:
+      - uploads:/app/uploads
+      - output:/app/output
+      - corrections:/app/corrections
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:5000/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
 
 volumes:
-  download_data:
+  uploads:
+  output:
+  corrections:
+  label-studio-data:

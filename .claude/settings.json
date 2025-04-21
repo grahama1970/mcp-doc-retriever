@@ -1,0 +1,229 @@
+{
+  "projects": {
+    "/Users/robert/Documents/dev/workspace/experiments/mcp-doc-retriver/": {
+      "allowedTools": [
+        // Python & virtual environments
+        "Bash(env:*)",
+        "Bash(python:*)",
+        "Bash(python3:*)",
+        "Bash(pip:*)",
+        "Bash(pip3:*)",
+        "Bash(uv:*)",
+        "Bash(uv add:*)",
+        "Bash(uv run:*)",
+        "Bash(uv pip:*)",
+        "Bash(uv venv:*)",
+        "Bash(venv:*)",
+        "Bash(pipenv:*)",
+        "Bash(conda:*)",
+        "Bash(poetry:*)",
+        // Node.js & npm/yarn/pnpm
+        "Bash(node:*)",
+        "Bash(npm:*)",
+        "Bash(npm install:*)",
+        "Bash(npm run:*)",
+        "Bash(npm test:*)",
+        "Bash(npx:*)",
+        "Bash(yarn:*)",
+        "Bash(yarn run:*)",
+        "Bash(yarn install:*)",
+        "Bash(pnpm:*)",
+        // Git
+        "Bash(git:*)",
+        "Bash(git status:*)",
+        "Bash(git add:*)",
+        "Bash(git commit:*)",
+        "Bash(git push:*)",
+        "Bash(git pull:*)",
+        "Bash(git checkout:*)",
+        "Bash(git branch:*)",
+        "Bash(git diff:*)",
+        "Bash(git log:*)",
+        "Bash(git reset:*)",
+        "Bash(git stash:*)",
+        "Bash(git restore:*)",
+        "Bash(git config:*)",
+        // File operations
+        "Bash(ls:*)",
+        "Bash(ls -l:*)",
+        "Bash(ls -la:*)",
+        "Bash(ls -a:*)",
+        "Bash(cat:*)",
+        "Bash(head:*)",
+        "Bash(tail:*)",
+        "Bash(cp:*)",
+        "Bash(cp -r:*)",
+        "Bash(mv:*)",
+        "Bash(mkdir:*)",
+        "Bash(mkdir -p:*)",
+        "Bash(touch:*)",
+        "Bash(rm:*)",
+        "Bash(rm -rf:*)",
+        "Bash(find:*)",
+        "Bash(grep:*)",
+        "Bash(sed:*)",
+        "Bash(awk:*)",
+        "Bash(cut:*)",
+        "Bash(sort:*)",
+        "Bash(uniq:*)",
+        "Bash(wc:*)",
+        "Bash(diff:*)",
+        "Bash(chmod:*)",
+        "Bash(chown:*)",
+        // Editors & applications
+        "Bash(code:*)",     // VS Code launch
+        "Bash(open:*)",     // macOS open command
+        "Bash(nano:*)",
+        "Bash(vim:*)",
+        "Bash(emacs:*)",
+        // Testing & linting
+        "Bash(pytest:*)",
+        "Bash(black:*)",
+        "Bash(flake8:*)",
+        "Bash(isort:*)",
+        "Bash(mypy:*)",
+        "Bash(pylint:*)",
+        "Bash(prettier:*)",
+        "Bash(eslint:*)",
+        "Bash(jest:*)",
+        "Bash(mocha:*)",
+        "Bash(ruff:*)",
+        // Docker & container tools
+        "Bash(docker:*)",
+        "Bash(docker build:*)",
+        "Bash(docker run:*)",
+        "Bash(docker ps:*)",
+        "Bash(docker compose:*)",
+        "Bash(docker-compose:*)",
+        "Bash(docker exec:*)",
+        "Bash(docker logs:*)",
+        "Bash(docker inspect:*)",
+        "Bash(podman:*)",
+        // Database tools
+        "Bash(sqlite3:*)",
+        "Bash(psql:*)",
+        "Bash(mysql:*)",
+        "Bash(mongo:*)",
+        // Process management
+        "Bash(ps:*)",
+        "Bash(kill:*)",
+        "Bash(pkill:*)",
+        "Bash(top:*)",
+        "Bash(htop:*)",
+        // Archive & compression
+        "Bash(tar:*)",
+        "Bash(zip:*)",
+        "Bash(unzip:*)",
+        "Bash(gzip:*)",
+        "Bash(gunzip:*)",
+        // Network & servers
+        "Bash(curl:*)",
+        "Bash(wget:*)",
+        "Bash(ssh:*)",
+        "Bash(scp:*)",
+        "Bash(rsync:*)",
+        "Bash(nc:*)",
+        "Bash(ping:*)",
+        "Bash(traceroute:*)",
+        "Bash(nslookup:*)",
+        "Bash(dig:*)",
+        "Bash(ifconfig:*)",
+        "Bash(ip:*)",
+        "Bash(netstat:*)",
+        // System info & monitoring
+        "Bash(df:*)",
+        "Bash(du:*)",
+        "Bash(free:*)",
+        "Bash(vmstat:*)",
+        "Bash(iostat:*)",
+        "Bash(uptime:*)",
+        "Bash(uname:*)",
+        // Shell utilities
+        "Bash(echo:*)",
+        "Bash(printf:*)",
+        "Bash(date:*)",
+        "Bash(time:*)",
+        "Bash(sleep:*)",
+        "Bash(which:*)",
+        "Bash(whereis:*)",
+        "Bash(watch:*)",
+        "Bash(nohup:*)",
+        // PDF specific tools
+        "Bash(poppler-utils:*)",
+        "Bash(pdftotext:*)",
+        "Bash(pdftoppm:*)",
+        "Bash(pdftocairo:*)",
+        "Bash(tesseract:*)",
+        "Bash(ocrmypdf:*)"
+      ],
+      "permissions": {
+        "editFiles": true,
+        "createFiles": true,
+        "deleteFiles": true,
+        "readFiles": true,
+        "runCommands": true,
+        "accessNetwork": true,
+        "automaticApproval": {
+          "enabled": true,
+          "safeCommands": [
+            "ls",
+            "cat",
+            "echo",
+            "head",
+            "tail",
+            "find",
+            "grep",
+            "git status",
+            "git log"
+          ]
+        }
+      },
+      "paths": {
+        "allowedDirectories": [
+          "/Users/robert/Desktop/verifaix/",
+          "/Users/robert/Desktop/verifaix/claude_tasks/"
+        ],
+        "excludedDirectories": [
+          "/Users/robert/Desktop/verifaix/claude_tasks/.git/",
+          "/Users/robert/Desktop/verifaix/claude_tasks/node_modules/"
+        ],
+        "excludedPatterns": [
+          "**/*.env",
+          "**/*.key",
+          "**/*.pem",
+          "**/*.secret",
+          "**/password*",
+          "**/credentials*"
+        ]
+      },
+      "git": {
+        "enabled": true,
+        "autoCommit": false,
+        "branchPrefix": "claude-",
+        "requireCommitMessages": true
+      },
+      "logging": {
+        "level": "info",
+        "file": "/Users/robert/Desktop/verifaix/claude_tasks/logs/claude-code.log"
+      },
+      "security": {
+        "blockedCommands": [
+          "sudo",
+          "su",
+          "ssh-keygen",
+          "curl -o",
+          "wget -O",
+          "rm -rf /",
+          ":(){ :|:& };:"
+        ],
+        "sensitiveDataPatterns": [
+          "password",
+          "api[-_]?key",
+          "auth[-_]?token",
+          "secret",
+          "credential"
+        ]
+      }
+    }
+  }
+}
